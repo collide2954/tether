@@ -5,11 +5,12 @@ use std::sync::Arc;
 use std::time::Instant;
 use tether_core::camera::{Camera, FRAME};
 use tether_core::color::Palette;
+use tether_core::game::{Game, STEP};
 use tether_core::math::Vec2;
 use tether_core::mesh::Mesh;
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
-use winit::event::{ElementState, WindowEvent};
+use winit::event::{ElementState, MouseButton, TouchPhase, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop, OwnedDisplayHandle};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Fullscreen, Window, WindowId};
@@ -26,6 +27,7 @@ pub struct Capture {
     pub at: f32,
     pub width: u32,
     pub height: u32,
+    pub drag: Option<(Vec2, Vec2)>,
 }
 
 impl Options {
@@ -34,6 +36,7 @@ impl Options {
         let mut path = None;
         let mut at = 0.0;
         let mut size = (1920, 1080);
+        let mut drag = None;
         let mut args = args.into_iter();
         while let Some(arg) = args.next() {
             match arg.as_str() {
@@ -49,6 +52,7 @@ impl Options {
                         size = value;
                     }
                 }
+                "--drag" => drag = args.next().and_then(|s| parse_drag(&s)),
                 _ => {}
             }
         }
@@ -57,8 +61,20 @@ impl Options {
             at,
             width: size.0,
             height: size.1,
+            drag,
         });
         Self { windowed, capture }
+    }
+}
+
+fn parse_drag(text: &str) -> Option<(Vec2, Vec2)> {
+    let values: Vec<f32> = text
+        .split(',')
+        .map(|s| s.trim().parse().ok())
+        .collect::<Option<_>>()?;
+    match values[..] {
+        [x0, y0, x1, y1] => Some((Vec2::new(x0, y0), Vec2::new(x1, y1))),
+        _ => None,
     }
 }
 
@@ -81,8 +97,20 @@ pub fn capture(capture: &Capture) -> Result<(), String> {
     let size = Vec2::new(capture.width as f32, capture.height as f32);
     let camera = Camera::fit(FRAME, size);
     let palette = Palette::paper();
-    let mesh = Mesh::new(camera.pixel_size());
-    let globals = Globals::new(&camera, palette.ground, capture.at);
+    let mut game = Game::new(0);
+    let steps = (capture.at / STEP).round() as usize;
+    if let Some((from, _)) = capture.drag {
+        game.pointer_down(from);
+    }
+    for i in 0..steps {
+        if let Some((from, to)) = capture.drag {
+            game.pointer_move(from.lerp(to, ((i + 1) as f32 / steps as f32).min(1.0)));
+        }
+        game.advance(STEP);
+    }
+    let mut mesh = Mesh::new(camera.pixel_size());
+    game.draw(&palette, &mut mesh);
+    let globals = Globals::new(&camera, palette.ground, game.time);
     let rgba = pollster::block_on(crate::gpu::capture(
         capture.width,
         capture.height,
@@ -116,7 +144,10 @@ struct Running {
     gpu: Gpu,
     mesh: Mesh,
     palette: Palette,
-    start: Instant,
+    game: Game,
+    camera: Camera,
+    cursor: Vec2,
+    last: Instant,
 }
 
 impl ApplicationHandler for App {
@@ -136,10 +167,13 @@ impl ApplicationHandler for App {
         window.request_redraw();
         self.running = Some(Running {
             window,
+            camera: Camera::fit(FRAME, gpu.size()),
             gpu,
             mesh: Mesh::default(),
             palette: Palette::paper(),
-            start: Instant::now(),
+            game: Game::new(0),
+            cursor: Vec2::ZERO,
+            last: Instant::now(),
         });
     }
 
@@ -156,6 +190,25 @@ impl ApplicationHandler for App {
             {
                 if is_fullscreen_toggle(&event.logical_key, self.modifiers) {
                     running.toggle_fullscreen();
+                }
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                running.pointer_move(Vec2::new(position.x as f32, position.y as f32));
+            }
+            WindowEvent::MouseInput {
+                state,
+                button: MouseButton::Left,
+                ..
+            } => match state {
+                ElementState::Pressed => running.game.pointer_down(running.cursor),
+                ElementState::Released => running.game.pointer_up(),
+            },
+            WindowEvent::Touch(touch) => {
+                running.pointer_move(Vec2::new(touch.location.x as f32, touch.location.y as f32));
+                match touch.phase {
+                    TouchPhase::Started => running.game.pointer_down(running.cursor),
+                    TouchPhase::Ended | TouchPhase::Cancelled => running.game.pointer_up(),
+                    TouchPhase::Moved => {}
                 }
             }
             WindowEvent::RedrawRequested => {
@@ -176,12 +229,20 @@ impl Running {
         self.window.set_fullscreen(next);
     }
 
+    fn pointer_move(&mut self, screen: Vec2) {
+        self.cursor = self.camera.screen_to_world(screen);
+        self.game.pointer_move(self.cursor);
+    }
+
     fn frame(&mut self) {
-        let camera = Camera::fit(FRAME, self.gpu.size());
-        self.mesh.feather = camera.pixel_size();
+        let now = Instant::now();
+        self.game.advance((now - self.last).as_secs_f32());
+        self.last = now;
+        self.camera = Camera::fit(FRAME, self.gpu.size());
+        self.mesh.feather = self.camera.pixel_size();
         self.mesh.clear();
-        let time = self.start.elapsed().as_secs_f32();
-        let globals = Globals::new(&camera, self.palette.ground, time);
+        self.game.draw(&self.palette, &mut self.mesh);
+        let globals = Globals::new(&self.camera, self.palette.ground, self.game.time);
         self.gpu.render(&globals, &self.mesh);
     }
 }
@@ -216,6 +277,7 @@ mod tests {
                 at: 0.0,
                 width: 1920,
                 height: 1080,
+                drag: None,
             })
         );
     }
@@ -240,6 +302,19 @@ mod tests {
             Options::parse(args(&["--at", "3", "--size", "10x10"])).capture,
             None
         );
+    }
+
+    #[test]
+    fn options_read_a_capture_drag() {
+        let options = Options::parse(args(&["--capture", "a.png", "--drag", "-1.5,0,2,-0.5"]));
+        let drag = options.capture.expect("capture").drag;
+        assert_eq!(drag, Some((Vec2::new(-1.5, 0.0), Vec2::new(2.0, -0.5))));
+    }
+
+    #[test]
+    fn options_ignore_a_bad_drag() {
+        let options = Options::parse(args(&["--capture", "a.png", "--drag", "1,2,3"]));
+        assert_eq!(options.capture.expect("capture").drag, None);
     }
 
     #[test]

@@ -1,6 +1,6 @@
 use crate::color::Palette;
 use crate::level::{LEVELS, Level};
-use crate::math::Vec2;
+use crate::math::{Vec2, smoothstep};
 use crate::mesh::Mesh;
 use crate::ribbon::Side;
 use crate::scene::{draw_halo, draw_ribbons, draw_shadows, draw_traveler};
@@ -11,6 +11,7 @@ pub const STEP: f32 = 1.0 / 120.0;
 pub const MAX_FRAME: f32 = 0.25;
 pub const GRAB_RADIUS: f32 = 0.45;
 pub const HOLD: f32 = 1.8;
+pub const FADE: f32 = 0.6;
 
 #[derive(Clone, Debug)]
 pub struct Game {
@@ -18,6 +19,7 @@ pub struct Game {
     pub traveler: Option<Traveler>,
     pub level: usize,
     pub time: f32,
+    pub age: f32,
     pub complete: Option<f32>,
     pub moments: Vec<Moment>,
     accumulator: f32,
@@ -38,6 +40,7 @@ impl Game {
             world,
             level,
             time: 0.0,
+            age: 0.0,
             complete: None,
             moments: Vec::new(),
             accumulator: 0.0,
@@ -47,6 +50,7 @@ impl Game {
     fn step(&mut self) {
         self.world.step(STEP);
         self.time += STEP;
+        self.age += STEP;
         if let Some(traveler) = &mut self.traveler {
             let moments = traveler.step(&self.world, STEP);
             if moments.contains(&Moment::Arrived) {
@@ -99,6 +103,14 @@ impl Game {
         self.world.grip = best.map(|(_, end)| Grip { end, target: at });
     }
 
+    pub fn veil(&self) -> f32 {
+        let entry = 1.0 - smoothstep(0.0, FADE, self.age);
+        let exit = self
+            .complete
+            .map_or(0.0, |held| smoothstep(HOLD - FADE, HOLD, held));
+        entry.max(exit)
+    }
+
     pub fn pointer_move(&mut self, at: Vec2) {
         if let Some(grip) = &mut self.world.grip {
             grip.target = at;
@@ -118,8 +130,14 @@ impl Game {
         if let Some(traveler) = &self.traveler {
             draw_traveler(&self.world, traveler, palette, self.time, mesh);
         }
+        let veil = self.veil();
+        if veil > 0.0 {
+            mesh.square(Vec2::ZERO, VEIL_REACH, 0.0, palette.ground.with_alpha(veil));
+        }
     }
 }
+
+const VEIL_REACH: f32 = 20.0;
 
 #[cfg(test)]
 mod tests {
@@ -128,6 +146,12 @@ mod tests {
 
     fn open_tail(game: &Game) -> Vec2 {
         game.world.ribbons[0].end_pos(Side::Tail)
+    }
+
+    fn run(game: &mut Game, seconds: f32) {
+        for _ in 0..(seconds / STEP).round() as usize {
+            game.advance(STEP);
+        }
     }
 
     fn short_line() -> World {
@@ -198,6 +222,32 @@ mod tests {
         let core =
             first(&|v| v.shape[0] == kind(Kind::Disc) && v.color == palette.pulse.premultiplied());
         assert!(glow < ink && ink < core);
+    }
+
+    #[test]
+    fn veil_fades_in_on_entry_and_out_after_completion() {
+        let mut game = Game::with_world(short_line(), 0);
+        assert_eq!(game.veil(), 1.0);
+        run(&mut game, FADE / 2.0);
+        assert!(game.veil() > 0.0 && game.veil() < 1.0);
+        run(&mut game, FADE);
+        assert_eq!(game.veil(), 0.0);
+        game.complete = Some(HOLD - FADE / 2.0);
+        assert!(game.veil() > 0.0 && game.veil() < 1.0);
+        game.complete = Some(HOLD);
+        assert_eq!(game.veil(), 1.0);
+    }
+
+    #[test]
+    fn draw_covers_the_frame_with_the_veil() {
+        use crate::mesh::Kind;
+        let game = Game::new(0);
+        let palette = Palette::paper();
+        let mut mesh = Mesh::new(0.01);
+        game.draw(&palette, &mut mesh);
+        let last = mesh.vertices.last().expect("vertex");
+        assert_eq!(last.shape[0], Kind::Square as u32 as f32);
+        assert_eq!(last.color, palette.ground.with_alpha(1.0).premultiplied());
     }
 
     #[test]

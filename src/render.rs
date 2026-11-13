@@ -4,6 +4,19 @@ use tether_core::mesh::{Mesh, Vertex};
 use tether_core::view::View;
 
 pub const WARPS: usize = 8;
+pub const HDR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+pub const BLOOM_LEVELS: usize = 5;
+
+pub fn bloom_sizes(size: (u32, u32)) -> [(u32, u32); BLOOM_LEVELS] {
+    let mut out = [(1, 1); BLOOM_LEVELS];
+    let (mut w, mut h) = size;
+    for slot in &mut out {
+        w = w.div_ceil(2).max(1);
+        h = h.div_ceil(2).max(1);
+        *slot = (w, h);
+    }
+    out
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Pod, Zeroable)]
@@ -45,79 +58,247 @@ const VERTEX_LAYOUT: wgpu::VertexBufferLayout<'static> = wgpu::VertexBufferLayou
     attributes: &VERTEX_ATTRIBUTES,
 };
 
+struct Targets {
+    size: (u32, u32),
+    msaa: Option<wgpu::TextureView>,
+    hdr: wgpu::TextureView,
+    bloom: Vec<wgpu::TextureView>,
+    down: Vec<wgpu::BindGroup>,
+    up: Vec<wgpu::BindGroup>,
+    composite: wgpu::BindGroup,
+}
+
 pub struct Renderer {
+    samples: u32,
     globals: wgpu::Buffer,
-    bind_group: wgpu::BindGroup,
+    globals_group: wgpu::BindGroup,
+    texture_layout: wgpu::BindGroupLayout,
+    composite_layout: wgpu::BindGroupLayout,
+    sampler: wgpu::Sampler,
     ground: wgpu::RenderPipeline,
     shapes: wgpu::RenderPipeline,
+    prefilter: wgpu::RenderPipeline,
+    down: wgpu::RenderPipeline,
+    up: wgpu::RenderPipeline,
+    composite: wgpu::RenderPipeline,
     vertices: wgpu::Buffer,
     indices: wgpu::Buffer,
+    targets: Option<Targets>,
+}
+
+struct Target {
+    format: wgpu::TextureFormat,
+    blend: Option<wgpu::BlendState>,
+    samples: u32,
 }
 
 impl Renderer {
-    pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
+    pub fn new(device: &wgpu::Device, output: wgpu::TextureFormat, samples: u32) -> Self {
         let globals = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("globals"),
             size: size_of::<Globals>() as wgpu::BufferAddress,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let globals_layout = layout(device, &[uniform_entry(0)]);
+        let globals_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("globals"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            }],
-        });
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("globals"),
-            layout: &layout,
+            layout: &globals_layout,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
                 resource: globals.as_entire_binding(),
             }],
         });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("tether"),
-            bind_group_layouts: &[Some(&layout)],
-            immediate_size: 0,
+        let texture_layout = layout(device, &[texture_entry(0), sampler_entry(1)]);
+        let composite_layout = layout(
+            device,
+            &[texture_entry(0), texture_entry(1), sampler_entry(2)],
+        );
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("linear"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
         });
+        let scene_layout = pipeline_layout(device, &[&globals_layout]);
+        let bloom_layout = pipeline_layout(device, &[&texture_layout]);
+        let final_layout = pipeline_layout(device, &[&globals_layout, &composite_layout]);
         let ground_module = device.create_shader_module(wgpu::include_wgsl!("shaders/ground.wgsl"));
         let shapes_module = device.create_shader_module(wgpu::include_wgsl!("shaders/shapes.wgsl"));
-        let ground = pipeline(device, &pipeline_layout, &ground_module, &[], format, None);
-        let shapes = pipeline(
-            device,
-            &pipeline_layout,
-            &shapes_module,
-            &[Some(VERTEX_LAYOUT)],
-            format,
-            Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-        );
+        let bloom_module = device.create_shader_module(wgpu::include_wgsl!("shaders/bloom.wgsl"));
+        let composite_module =
+            device.create_shader_module(wgpu::include_wgsl!("shaders/composite.wgsl"));
+        let hdr = |blend, samples| Target {
+            format: HDR,
+            blend,
+            samples,
+        };
         Self {
+            samples,
+            ground: pipeline(
+                device,
+                &scene_layout,
+                &ground_module,
+                "fs_main",
+                &[],
+                hdr(None, samples),
+            ),
+            shapes: pipeline(
+                device,
+                &scene_layout,
+                &shapes_module,
+                "fs_main",
+                &[Some(VERTEX_LAYOUT)],
+                hdr(
+                    Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                    samples,
+                ),
+            ),
+            prefilter: pipeline(
+                device,
+                &bloom_layout,
+                &bloom_module,
+                "fs_prefilter",
+                &[],
+                hdr(None, 1),
+            ),
+            down: pipeline(
+                device,
+                &bloom_layout,
+                &bloom_module,
+                "fs_down",
+                &[],
+                hdr(None, 1),
+            ),
+            up: pipeline(
+                device,
+                &bloom_layout,
+                &bloom_module,
+                "fs_up",
+                &[],
+                hdr(Some(wgpu::BlendState::ADDITIVE), 1),
+            ),
+            composite: pipeline(
+                device,
+                &final_layout,
+                &composite_module,
+                "fs_main",
+                &[],
+                Target {
+                    format: output,
+                    blend: None,
+                    samples: 1,
+                },
+            ),
             globals,
-            bind_group,
-            ground,
-            shapes,
+            globals_group,
+            texture_layout,
+            composite_layout,
+            sampler,
             vertices: buffer(device, "vertices", wgpu::BufferUsages::VERTEX, 1 << 16),
             indices: buffer(device, "indices", wgpu::BufferUsages::INDEX, 1 << 16),
+            targets: None,
         }
     }
 
+    fn make_targets(&self, device: &wgpu::Device, size: (u32, u32)) -> Targets {
+        let texture = |label: &str, (width, height): (u32, u32), samples: u32, usage| {
+            device
+                .create_texture(&wgpu::TextureDescriptor {
+                    label: Some(label),
+                    size: wgpu::Extent3d {
+                        width,
+                        height,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: samples,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: HDR,
+                    usage,
+                    view_formats: &[],
+                })
+                .create_view(&Default::default())
+        };
+        let sampled = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
+        let msaa = (self.samples > 1).then(|| {
+            texture(
+                "msaa",
+                size,
+                self.samples,
+                wgpu::TextureUsages::RENDER_ATTACHMENT,
+            )
+        });
+        let hdr = texture("hdr", size, 1, sampled);
+        let bloom: Vec<wgpu::TextureView> = bloom_sizes(size)
+            .iter()
+            .map(|&s| texture("bloom", s, 1, sampled))
+            .collect();
+        let group = |source: &wgpu::TextureView| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("bloom"),
+                layout: &self.texture_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(source),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&self.sampler),
+                    },
+                ],
+            })
+        };
+        let down = (0..BLOOM_LEVELS)
+            .map(|k| group(if k == 0 { &hdr } else { &bloom[k - 1] }))
+            .collect();
+        let up = (0..BLOOM_LEVELS - 1)
+            .map(|k| group(&bloom[k + 1]))
+            .collect();
+        let composite = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("composite"),
+            layout: &self.composite_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&hdr),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&bloom[0]),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+            ],
+        });
+        Targets {
+            size,
+            msaa,
+            hdr,
+            bloom,
+            down,
+            up,
+            composite,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub fn render(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
-        view: &wgpu::TextureView,
+        output: &wgpu::TextureView,
+        size: (u32, u32),
         globals: &Globals,
         mesh: &Mesh,
     ) {
+        if self.targets.as_ref().is_none_or(|t| t.size != size) {
+            self.targets = Some(self.make_targets(device, size));
+        }
         queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(globals));
         let vertex_bytes: &[u8] = bytemuck::cast_slice(&mesh.vertices);
         let index_bytes: &[u8] = bytemuck::cast_slice(&mesh.indices);
@@ -139,37 +320,161 @@ impl Renderer {
             queue.write_buffer(&self.vertices, 0, vertex_bytes);
             queue.write_buffer(&self.indices, 0, index_bytes);
         }
+        let Some(targets) = self.targets.as_ref() else {
+            return;
+        };
         let g = globals.ground;
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("frame"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color {
-                        r: g[0] as f64,
-                        g: g[1] as f64,
-                        b: g[2] as f64,
-                        a: 1.0,
-                    }),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            ..Default::default()
-        });
-        pass.set_bind_group(0, &self.bind_group, &[]);
-        pass.set_pipeline(&self.ground);
-        pass.draw(0..3, 0..1);
-        if !index_bytes.is_empty() {
-            pass.set_pipeline(&self.shapes);
-            pass.set_vertex_buffer(0, self.vertices.slice(..vertex_bytes.len() as u64));
-            pass.set_index_buffer(
-                self.indices.slice(..index_bytes.len() as u64),
-                wgpu::IndexFormat::Uint32,
-            );
-            pass.draw_indexed(0..mesh.indices.len() as u32, 0, 0..1);
+        let ground = wgpu::Color {
+            r: f64::from(g[0]),
+            g: f64::from(g[1]),
+            b: f64::from(g[2]),
+            a: 1.0,
+        };
+        {
+            let (view, resolve) = match &targets.msaa {
+                Some(msaa) => (msaa, Some(&targets.hdr)),
+                None => (&targets.hdr, None),
+            };
+            let store = if resolve.is_some() {
+                wgpu::StoreOp::Discard
+            } else {
+                wgpu::StoreOp::Store
+            };
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("scene"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    depth_slice: None,
+                    resolve_target: resolve,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(ground),
+                        store,
+                    },
+                })],
+                ..Default::default()
+            });
+            pass.set_bind_group(0, &self.globals_group, &[]);
+            pass.set_pipeline(&self.ground);
+            pass.draw(0..3, 0..1);
+            if !index_bytes.is_empty() {
+                pass.set_pipeline(&self.shapes);
+                pass.set_vertex_buffer(0, self.vertices.slice(..vertex_bytes.len() as u64));
+                pass.set_index_buffer(
+                    self.indices.slice(..index_bytes.len() as u64),
+                    wgpu::IndexFormat::Uint32,
+                );
+                pass.draw_indexed(0..mesh.indices.len() as u32, 0, 0..1);
+            }
         }
+        for k in 0..BLOOM_LEVELS {
+            let pipeline = if k == 0 { &self.prefilter } else { &self.down };
+            let clear = wgpu::LoadOp::Clear(wgpu::Color::BLACK);
+            fullscreen(
+                encoder,
+                &targets.bloom[k],
+                clear,
+                pipeline,
+                &[&targets.down[k]],
+            );
+        }
+        for k in (0..BLOOM_LEVELS - 1).rev() {
+            fullscreen(
+                encoder,
+                &targets.bloom[k],
+                wgpu::LoadOp::Load,
+                &self.up,
+                &[&targets.up[k]],
+            );
+        }
+        let groups = [&self.globals_group, &targets.composite];
+        fullscreen(
+            encoder,
+            output,
+            wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+            &self.composite,
+            &groups,
+        );
+    }
+}
+
+fn fullscreen(
+    encoder: &mut wgpu::CommandEncoder,
+    target: &wgpu::TextureView,
+    load: wgpu::LoadOp<wgpu::Color>,
+    pipeline: &wgpu::RenderPipeline,
+    groups: &[&wgpu::BindGroup],
+) {
+    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("fullscreen"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view: target,
+            depth_slice: None,
+            resolve_target: None,
+            ops: wgpu::Operations {
+                load,
+                store: wgpu::StoreOp::Store,
+            },
+        })],
+        ..Default::default()
+    });
+    pass.set_pipeline(pipeline);
+    for (index, group) in groups.iter().enumerate() {
+        pass.set_bind_group(index as u32, *group, &[]);
+    }
+    pass.draw(0..3, 0..1);
+}
+
+fn layout(device: &wgpu::Device, entries: &[wgpu::BindGroupLayoutEntry]) -> wgpu::BindGroupLayout {
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: None,
+        entries,
+    })
+}
+
+fn pipeline_layout(
+    device: &wgpu::Device,
+    groups: &[&wgpu::BindGroupLayout],
+) -> wgpu::PipelineLayout {
+    let groups: Vec<Option<&wgpu::BindGroupLayout>> = groups.iter().map(|g| Some(*g)).collect();
+    device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: None,
+        bind_group_layouts: &groups,
+        immediate_size: 0,
+    })
+}
+
+fn uniform_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Uniform,
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    }
+}
+
+fn texture_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+            view_dimension: wgpu::TextureViewDimension::D2,
+            multisampled: false,
+        },
+        count: None,
+    }
+}
+
+fn sampler_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+        count: None,
     }
 }
 
@@ -177,12 +482,12 @@ fn pipeline(
     device: &wgpu::Device,
     layout: &wgpu::PipelineLayout,
     module: &wgpu::ShaderModule,
+    fragment: &str,
     buffers: &[Option<wgpu::VertexBufferLayout<'_>>],
-    format: wgpu::TextureFormat,
-    blend: Option<wgpu::BlendState>,
+    target: Target,
 ) -> wgpu::RenderPipeline {
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: None,
+        label: Some(fragment),
         layout: Some(layout),
         vertex: wgpu::VertexState {
             module,
@@ -192,14 +497,17 @@ fn pipeline(
         },
         primitive: wgpu::PrimitiveState::default(),
         depth_stencil: None,
-        multisample: wgpu::MultisampleState::default(),
+        multisample: wgpu::MultisampleState {
+            count: target.samples,
+            ..Default::default()
+        },
         fragment: Some(wgpu::FragmentState {
             module,
-            entry_point: Some("fs_main"),
+            entry_point: Some(fragment),
             compilation_options: Default::default(),
             targets: &[Some(wgpu::ColorTargetState {
-                format,
-                blend,
+                format: target.format,
+                blend: target.blend,
                 write_mask: wgpu::ColorWrites::ALL,
             })],
         }),
@@ -293,6 +601,37 @@ mod tests {
     fn shapes_shader_is_valid_and_matches_globals() {
         let module = parse(include_str!("shaders/shapes.wgsl"));
         assert_eq!(globals_offsets(&module), rust_offsets());
+    }
+
+    #[test]
+    fn bloom_shader_is_valid_with_three_passes() {
+        let module = parse(include_str!("shaders/bloom.wgsl"));
+        let names: Vec<&str> = module
+            .entry_points
+            .iter()
+            .map(|e| e.name.as_str())
+            .collect();
+        for wanted in ["vs_main", "fs_prefilter", "fs_down", "fs_up"] {
+            assert!(names.contains(&wanted), "{wanted}");
+        }
+    }
+
+    #[test]
+    fn composite_shader_is_valid_and_matches_globals() {
+        let module = parse(include_str!("shaders/composite.wgsl"));
+        assert_eq!(globals_offsets(&module), rust_offsets());
+    }
+
+    #[test]
+    fn bloom_sizes_halve_down_to_one() {
+        assert_eq!(
+            bloom_sizes((1920, 1080)),
+            [(960, 540), (480, 270), (240, 135), (120, 68), (60, 34)]
+        );
+        assert_eq!(
+            bloom_sizes((3, 1)),
+            [(2, 1), (1, 1), (1, 1), (1, 1), (1, 1)]
+        );
     }
 
     #[test]

@@ -1,4 +1,4 @@
-use crate::render::{Globals, Renderer};
+use crate::render::{Globals, HDR, Renderer};
 use std::sync::Arc;
 use tether_core::math::Vec2;
 use tether_core::mesh::Mesh;
@@ -18,6 +18,15 @@ impl std::fmt::Debug for Display {
 impl HasDisplayHandle for Display {
     fn display_handle(&self) -> Result<DisplayHandle<'_>, HandleError> {
         self.0.display_handle()
+    }
+}
+
+pub fn samples(adapter: &wgpu::Adapter) -> u32 {
+    let features = adapter.get_texture_format_features(HDR);
+    if features.flags.sample_count_supported(4) {
+        4
+    } else {
+        1
     }
 }
 
@@ -47,7 +56,7 @@ pub async fn capture(width: u32, height: u32, globals: &Globals, mesh: &Mesh) ->
         .await
         .expect("open the GPU device");
     let format = wgpu::TextureFormat::Rgba8UnormSrgb;
-    let mut renderer = Renderer::new(&device, format);
+    let mut renderer = Renderer::new(&device, format, samples(&adapter));
     let extent = wgpu::Extent3d {
         width,
         height,
@@ -74,7 +83,15 @@ pub async fn capture(width: u32, height: u32, globals: &Globals, mesh: &Mesh) ->
     });
     let view = texture.create_view(&Default::default());
     let mut encoder = device.create_command_encoder(&Default::default());
-    renderer.render(&device, &queue, &mut encoder, &view, globals, mesh);
+    renderer.render(
+        &device,
+        &queue,
+        &mut encoder,
+        &view,
+        (width, height),
+        globals,
+        mesh,
+    );
     encoder.copy_texture_to_buffer(
         wgpu::TexelCopyTextureInfo {
             texture: &texture,
@@ -165,7 +182,7 @@ impl Gpu {
             view_formats: vec![],
         };
         surface.configure(&device, &config);
-        let renderer = Renderer::new(&device, format);
+        let renderer = Renderer::new(&device, format, samples(&adapter));
         Self {
             instance,
             window,
@@ -217,6 +234,7 @@ impl Gpu {
             &self.queue,
             &mut encoder,
             &view,
+            (self.config.width, self.config.height),
             globals,
             mesh,
         );

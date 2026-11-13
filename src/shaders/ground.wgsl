@@ -10,9 +10,10 @@ struct Globals {
 
 @group(0) @binding(0) var<uniform> globals: Globals;
 
-const CELL: f32 = 0.6;
+const CELL: f32 = 0.72;
 const JITTER: f32 = 0.38;
-const LINE: f32 = 0.008;
+const LINE: f32 = 0.0045;
+const STRENGTH: f32 = 0.65;
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
@@ -92,7 +93,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let line = 1.0 - smoothstep(LINE, LINE + aa, lattice(q));
     let fade = 1.0 - smoothstep(0.02, 0.12, aa / CELL);
     let mist = smoothstep(18.0, 60.0, t);
-    let lit = mix(globals.ground.rgb, globals.lattice.rgb, line * fade * (1.0 - mist));
+    let lit = mix(globals.ground.rgb, globals.lattice.rgb, line * fade * STRENGTH * (1.0 - mist));
     let color = select(globals.ground.rgb * 0.7, lit * (1.0 - 0.35 * mist), hits);
     return vec4<f32>(color, 1.0);
 }

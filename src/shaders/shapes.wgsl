@@ -89,7 +89,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let width = max(max(fwidth(d), in.shape.w), 1e-6);
     let coverage = clamp(0.5 - d / width, 0.0, 1.0);
     if (glow >= 0.0) {
-        return in.color * glow;
+        return vec4<f32>(in.color.rgb * glow, 0.0);
     }
     return in.color * coverage;
 }

@@ -10,8 +10,10 @@ use tether_core::audio::synth::Command;
 use tether_core::audio::wav::encode_wav;
 use tether_core::color::Palette;
 use tether_core::game::{Game, STEP};
+use tether_core::look::Look;
 use tether_core::math::Vec2;
 use tether_core::mesh::Mesh;
+use tether_core::scene;
 use tether_core::view::View;
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
@@ -144,6 +146,7 @@ pub fn capture(capture: &Capture) -> Result<(), String> {
     let view = View::new(size);
     let palette = Palette::video();
     let mut game = Game::new(capture.level);
+    let mut look = Look::default();
     let steps = (capture.at / STEP).round() as usize;
     let drag_steps = (DRAG_TIME / STEP).round() as usize;
     if let Some((from, _)) = capture.drag {
@@ -154,9 +157,11 @@ pub fn capture(capture: &Capture) -> Result<(), String> {
             game.pointer_move(from.lerp(to, ((i + 1) as f32 / drag_steps as f32).min(1.0)));
         }
         game.advance(STEP);
+        let cues = game.take_cues();
+        look.update(&game, &cues, STEP);
     }
     let mut mesh = Mesh::new(view.pixel_size() * FEATHER);
-    game.draw(&palette, &mut mesh);
+    scene::draw(&game, &look, &view, &palette, &mut mesh);
     let globals = Globals::new(&view, &palette, game.time, &[]);
     let rgba = pollster::block_on(crate::gpu::capture(
         capture.width,
@@ -215,6 +220,7 @@ struct Running {
     sound: Option<Sound>,
     score: Score,
     muted: bool,
+    look: Look,
 }
 
 impl ApplicationHandler for App {
@@ -245,6 +251,7 @@ impl ApplicationHandler for App {
             sound: Sound::start(),
             score: Score::new(),
             muted: false,
+            look: Look::default(),
         });
     }
 
@@ -319,9 +326,11 @@ impl Running {
 
     fn frame(&mut self) {
         let now = Instant::now();
-        self.game.advance((now - self.last).as_secs_f32());
+        let dt = (now - self.last).as_secs_f32();
+        self.game.advance(dt);
         self.last = now;
         let cues = self.game.take_cues();
+        self.look.update(&self.game, &cues, dt);
         let commands = self.score.listen(&self.game, &cues);
         if let Some(sound) = &self.sound {
             sound.send(commands);
@@ -329,7 +338,13 @@ impl Running {
         self.view.viewport = self.gpu.size();
         self.mesh.feather = self.view.pixel_size() * FEATHER;
         self.mesh.clear();
-        self.game.draw(&self.palette, &mut self.mesh);
+        scene::draw(
+            &self.game,
+            &self.look,
+            &self.view,
+            &self.palette,
+            &mut self.mesh,
+        );
         let globals = Globals::new(&self.view, &self.palette, self.game.time, &[]);
         self.gpu.render(&globals, &self.mesh);
     }

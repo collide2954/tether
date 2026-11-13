@@ -2,5 +2,10 @@
 name = "tether"
 version = "0.1.0"
 edition = "2024"
+description = "An abstract puzzle game about folding space."
+authors = ["Brett Gilio"]
+license-file = "LICENSE"
+repository = "https://github.com/collide2954/tether"
+publish = false
 
 [dependencies]

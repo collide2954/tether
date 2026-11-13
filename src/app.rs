@@ -28,6 +28,7 @@ pub struct Capture {
     pub width: u32,
     pub height: u32,
     pub drag: Option<(Vec2, Vec2)>,
+    pub level: usize,
 }
 
 impl Options {
@@ -37,6 +38,7 @@ impl Options {
         let mut at = 0.0;
         let mut size = (1920, 1080);
         let mut drag = None;
+        let mut level = 0;
         let mut args = args.into_iter();
         while let Some(arg) = args.next() {
             match arg.as_str() {
@@ -53,6 +55,11 @@ impl Options {
                     }
                 }
                 "--drag" => drag = args.next().and_then(|s| parse_drag(&s)),
+                "--level" => {
+                    if let Some(value) = args.next().and_then(|s| s.parse().ok()) {
+                        level = value;
+                    }
+                }
                 _ => {}
             }
         }
@@ -62,6 +69,7 @@ impl Options {
             width: size.0,
             height: size.1,
             drag,
+            level,
         });
         Self { windowed, capture }
     }
@@ -99,7 +107,7 @@ pub fn capture(capture: &Capture) -> Result<(), String> {
     let size = Vec2::new(capture.width as f32, capture.height as f32);
     let camera = Camera::fit(FRAME, size);
     let palette = Palette::paper();
-    let mut game = Game::new(0);
+    let mut game = Game::new(capture.level);
     let steps = (capture.at / STEP).round() as usize;
     let drag_steps = (DRAG_TIME / STEP).round() as usize;
     if let Some((from, _)) = capture.drag {
@@ -281,6 +289,7 @@ mod tests {
                 width: 1920,
                 height: 1080,
                 drag: None,
+                level: 0,
             })
         );
     }
@@ -312,6 +321,14 @@ mod tests {
         let options = Options::parse(args(&["--capture", "a.png", "--drag", "-1.5,0,2,-0.5"]));
         let drag = options.capture.expect("capture").drag;
         assert_eq!(drag, Some((Vec2::new(-1.5, 0.0), Vec2::new(2.0, -0.5))));
+    }
+
+    #[test]
+    fn options_read_a_capture_level() {
+        let options = Options::parse(args(&["--capture", "a.png", "--level", "3"]));
+        assert_eq!(options.capture.expect("capture").level, 3);
+        let plain = Options::parse(args(&["--capture", "a.png"]));
+        assert_eq!(plain.capture.expect("capture").level, 0);
     }
 
     #[test]

@@ -2,12 +2,67 @@ use crate::color::{Palette, Rgba};
 use crate::math::Vec2;
 use crate::mesh::Mesh;
 use crate::ribbon::{Class, End, Ribbon, Side};
-use crate::world::World;
+use crate::traveler::{PAUSE, Phase, Span, Traveler, point_at};
+use crate::world::{EndRef, World};
 use std::f32::consts::FRAC_PI_2;
 
 pub const SHADOW_OFFSET: Vec2 = Vec2::new(0.05, -0.07);
 pub const SHADOW_SOFT: f32 = 0.12;
 pub const SHADOW_ALPHA: f32 = 0.16;
+pub const TETHER_HALF_WIDTH: f32 = 0.035;
+pub const PULSE_RADIUS: f32 = 0.085;
+pub const HALO_RADIUS: f32 = 0.6;
+pub const HALO_ALPHA: f32 = 0.6;
+
+pub fn draw_traveler(
+    world: &World,
+    traveler: &Traveler,
+    palette: &Palette,
+    time: f32,
+    mesh: &mut Mesh,
+) {
+    for span in &traveler.tether {
+        if (span.to - span.from).abs() < 1e-4 {
+            continue;
+        }
+        let points = span_points(world, span);
+        mesh.band(
+            &points,
+            &vec![TETHER_HALF_WIDTH; points.len()],
+            palette.halo,
+        );
+    }
+    let at = traveler.position(world);
+    let ready = match traveler.phase {
+        Phase::Waiting { left } => (1.0 - left / PAUSE).clamp(0.0, 1.0),
+        _ => 1.0,
+    };
+    let radius = HALO_RADIUS * (0.6 + 0.4 * ready) * (1.0 + 0.05 * (time * 6.0).sin());
+    mesh.glow(at, radius, palette.halo.with_alpha(HALO_ALPHA));
+    mesh.disc(at, PULSE_RADIUS, palette.pulse);
+}
+
+fn span_points(world: &World, span: &Span) -> Vec<Vec2> {
+    let (a, b) = (span.from, span.to);
+    let mut us = vec![a];
+    if b > a {
+        let mut k = a.floor() + 1.0;
+        while k < b {
+            us.push(k);
+            k += 1.0;
+        }
+    } else {
+        let mut k = a.ceil() - 1.0;
+        while k > b {
+            us.push(k);
+            k -= 1.0;
+        }
+    }
+    us.push(b);
+    us.into_iter()
+        .map(|u| point_at(world, span.ribbon, u))
+        .collect()
+}
 
 pub fn class_color(palette: &Palette, class: Class) -> Rgba {
     match class {
@@ -45,11 +100,21 @@ pub fn draw_world(world: &World, palette: &Palette, time: f32, mesh: &mut Mesh) 
         mesh.band(&lifted, &half_widths(r), shadow);
     }
     mesh.soft = soft;
-    for r in &world.ribbons {
+    for (ribbon, r) in world.ribbons.iter().enumerate() {
         mesh.band(&r.pos, &half_widths(r), palette.ink);
         for side in [Side::Head, Side::Tail] {
-            draw_end(r, side, palette, time, mesh);
+            if world.partner(EndRef { ribbon, side }).is_none() {
+                draw_end(r, side, palette, time, mesh);
+            }
         }
+    }
+    for weld in &world.welds {
+        let r = &world.ribbons[weld.a.ribbon];
+        let color = r
+            .end(weld.a.side)
+            .class()
+            .map_or(palette.ink, |c| class_color(palette, c));
+        mesh.disc(world.end_pos(weld.a), r.half_width * 1.1, color);
     }
 }
 
@@ -199,5 +264,92 @@ mod tests {
         let p = Palette::paper();
         let mesh = draw(ribbon(End::Source, End::Open(Class::Ink)));
         assert_eq!(band_vertices(&mesh, p.ink), 42 + 4);
+    }
+
+    #[test]
+    fn welded_ends_show_a_bead_and_no_caps() {
+        use crate::world::{EndRef, Weld};
+        let p = Palette::paper();
+        let a = Ribbon::new(
+            &[Vec2::new(-1.0, 0.0), Vec2::ZERO],
+            0.1,
+            0.1,
+            (End::Source, End::Open(Class::Red)),
+            0.5,
+        );
+        let b = Ribbon::new(
+            &[Vec2::ZERO, Vec2::new(1.0, 0.0)],
+            0.1,
+            0.1,
+            (End::Open(Class::Red), End::Goal),
+            0.5,
+        );
+        let mut world = World::new(vec![a, b]);
+        world.welds.push(Weld {
+            a: EndRef {
+                ribbon: 0,
+                side: Side::Tail,
+            },
+            b: EndRef {
+                ribbon: 1,
+                side: Side::Head,
+            },
+        });
+        let mut mesh = Mesh::new(0.01);
+        draw_world(&world, &p, 0.0, &mut mesh);
+        assert!(quads(&mesh, Kind::Square, p.red).is_empty());
+        let beads = quads(&mesh, Kind::Disc, p.red);
+        assert_eq!(beads.len(), 1);
+        assert!(beads[0].length() < 1e-4);
+    }
+
+    fn line_world() -> World {
+        World::new(vec![Ribbon::new(
+            &[Vec2::new(-2.0, 0.0), Vec2::new(2.0, 0.0)],
+            0.1,
+            0.1,
+            (End::Source, End::Open(Class::Ink)),
+            1.0,
+        )])
+    }
+
+    #[test]
+    fn traveler_draws_a_white_core_and_a_warm_halo() {
+        let p = Palette::paper();
+        let world = line_world();
+        let traveler = Traveler::new(&world).unwrap();
+        let mut mesh = Mesh::new(0.01);
+        draw_traveler(&world, &traveler, &p, 0.0, &mut mesh);
+        let core = quads(&mesh, Kind::Disc, p.pulse);
+        assert_eq!(core.len(), 1);
+        assert!(core[0].distance(Vec2::new(-2.0, 0.0)) < 1e-4);
+        assert_eq!(
+            quads(&mesh, Kind::Glow, p.halo.with_alpha(HALO_ALPHA)).len(),
+            1
+        );
+    }
+
+    #[test]
+    fn tether_follows_each_traveled_span() {
+        use crate::traveler::Span;
+        let p = Palette::paper();
+        let world = line_world();
+        let mut traveler = Traveler::new(&world).unwrap();
+        traveler.tether = vec![Span {
+            ribbon: 0,
+            from: 0.0,
+            to: 10.5,
+        }];
+        traveler.u = 10.5;
+        let mut mesh = Mesh::new(0.01);
+        draw_traveler(&world, &traveler, &p, 0.0, &mut mesh);
+        let line: Vec<&crate::mesh::Vertex> = mesh
+            .vertices
+            .iter()
+            .filter(|v| v.shape[0] == Kind::Band as u32 as f32 && v.color == p.halo.premultiplied())
+            .collect();
+        assert_eq!(line.len(), 2 * 12);
+        assert!((line.last().unwrap().local[0] - 1.05).abs() < 1e-4);
+        assert!((line[0].shape[1] - TETHER_HALF_WIDTH).abs() < 1e-6);
     }
 }

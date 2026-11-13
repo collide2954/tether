@@ -46,24 +46,28 @@ impl Rgba {
 #[derive(Clone, Copy, Debug)]
 pub struct Palette {
     pub ground: Rgba,
-    pub ink: Rgba,
+    pub neutral: Rgba,
     pub red: Rgba,
     pub yellow: Rgba,
     pub blue: Rgba,
     pub pulse: Rgba,
     pub halo: Rgba,
+    pub lattice: Rgba,
+    pub weld: Rgba,
 }
 
 impl Palette {
-    pub fn paper() -> Self {
+    pub fn video() -> Self {
         Self {
-            ground: Rgba::hex(0xEFE9DD),
-            ink: Rgba::hex(0x18171C),
-            red: Rgba::hex(0xD1301F),
-            yellow: Rgba::hex(0xF0B21A),
-            blue: Rgba::hex(0x1F4FA3),
-            pulse: Rgba::new(1.0, 1.0, 1.0, 1.0),
-            halo: Rgba::hex(0xF39C34),
+            ground: Rgba::hex(0x1C1E22),
+            neutral: Rgba::hex(0xE6DCC4),
+            red: Rgba::hex(0xC8563C),
+            yellow: Rgba::hex(0xD9A441),
+            blue: Rgba::hex(0x34406A),
+            pulse: Rgba::new(6.0, 6.0, 6.0, 1.0),
+            halo: Rgba::new(1.0, 0.92, 0.82, 1.0),
+            lattice: Rgba::hex(0x2C3036),
+            weld: Rgba::hex(0x3FE6F0),
         }
     }
 }
@@ -113,12 +117,21 @@ mod tests {
     }
 
     #[test]
-    fn paper_palette_uses_design_values() {
-        let p = Palette::paper();
-        assert_eq!(p.ground, Rgba::hex(0xEFE9DD));
-        assert_eq!(p.ink, Rgba::hex(0x18171C));
-        assert_eq!(p.red, Rgba::hex(0xD1301F));
-        assert_eq!(p.yellow, Rgba::hex(0xF0B21A));
-        assert_eq!(p.blue, Rgba::hex(0x1F4FA3));
+    fn video_palette_uses_design_values() {
+        let p = Palette::video();
+        assert_eq!(p.ground, Rgba::hex(0x1C1E22));
+        assert_eq!(p.lattice, Rgba::hex(0x2C3036));
+        assert_eq!(p.neutral, Rgba::hex(0xE6DCC4));
+        assert_eq!(p.red, Rgba::hex(0xC8563C));
+        assert_eq!(p.yellow, Rgba::hex(0xD9A441));
+        assert_eq!(p.blue, Rgba::hex(0x34406A));
+        assert_eq!(p.weld, Rgba::hex(0x3FE6F0));
+    }
+
+    #[test]
+    fn video_palette_pulse_is_bright_enough_to_bloom() {
+        let p = Palette::video();
+        assert!(p.pulse.r > 1.0 && p.pulse.g > 1.0 && p.pulse.b > 1.0);
+        assert_eq!(p.pulse.a, 1.0);
     }
 }

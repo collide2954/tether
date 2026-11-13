@@ -83,7 +83,7 @@ fn span_points(world: &World, span: &Span) -> Vec<Vec2> {
 
 pub fn class_color(palette: &Palette, class: Class) -> Rgba {
     match class {
-        Class::Ink => palette.ink,
+        Class::Ink => palette.neutral,
         Class::Yellow => palette.yellow,
         Class::Red => palette.red,
         Class::Blue => palette.blue,
@@ -116,7 +116,7 @@ pub fn draw_world(world: &World, palette: &Palette, time: f32, mesh: &mut Mesh) 
 pub fn draw_shadows(world: &World, palette: &Palette, mesh: &mut Mesh) {
     let soft = mesh.soft;
     mesh.soft = SHADOW_SOFT;
-    let shadow = palette.ink.with_alpha(SHADOW_ALPHA);
+    let shadow = palette.neutral.with_alpha(SHADOW_ALPHA);
     for r in &world.ribbons {
         let lifted: Vec<Vec2> = r.pos.iter().map(|&p| p + SHADOW_OFFSET).collect();
         mesh.band(&lifted, &half_widths(r), shadow);
@@ -126,7 +126,7 @@ pub fn draw_shadows(world: &World, palette: &Palette, mesh: &mut Mesh) {
 
 pub fn draw_ribbons(world: &World, palette: &Palette, time: f32, mesh: &mut Mesh) {
     for (ribbon, r) in world.ribbons.iter().enumerate() {
-        mesh.band(&r.pos, &half_widths(r), palette.ink);
+        mesh.band(&r.pos, &half_widths(r), palette.neutral);
         for side in [Side::Head, Side::Tail] {
             if world.partner(EndRef { ribbon, side }).is_none() {
                 draw_end(r, side, palette, time, mesh);
@@ -138,7 +138,7 @@ pub fn draw_ribbons(world: &World, palette: &Palette, time: f32, mesh: &mut Mesh
         let color = r
             .end(weld.a.side)
             .class()
-            .map_or(palette.ink, |c| class_color(palette, c));
+            .map_or(palette.neutral, |c| class_color(palette, c));
         mesh.disc(world.end_pos(weld.a), r.half_width * 1.1, color);
     }
 }
@@ -148,10 +148,10 @@ fn draw_end(r: &Ribbon, side: Side, palette: &Palette, time: f32, mesh: &mut Mes
     let out = r.outward(side);
     let hw = r.half_width;
     match r.end(side) {
-        End::Source => mesh.disc(p, hw * 2.2, palette.ink),
-        End::Goal => mesh.ring(p, hw * 2.6, hw * 0.7, palette.ink),
+        End::Source => mesh.disc(p, hw * 2.2, palette.neutral),
+        End::Goal => mesh.ring(p, hw * 2.6, hw * 0.7, palette.neutral),
         End::Cap => {
-            mesh.disc(p, hw * 1.5, palette.ink);
+            mesh.disc(p, hw * 1.5, palette.neutral);
             mesh.disc(p, hw * 0.55, palette.ground);
         }
         End::Open(class) => {
@@ -190,7 +190,7 @@ mod tests {
 
     fn draw(r: Ribbon) -> Mesh {
         let mut mesh = Mesh::new(0.01);
-        draw_world(&World::new(vec![r]), &Palette::paper(), 0.0, &mut mesh);
+        draw_world(&World::new(vec![r]), &Palette::video(), 0.0, &mut mesh);
         mesh
     }
 
@@ -217,8 +217,8 @@ mod tests {
 
     #[test]
     fn classes_use_palette_colors() {
-        let p = Palette::paper();
-        assert_eq!(class_color(&p, Class::Ink), p.ink);
+        let p = Palette::video();
+        assert_eq!(class_color(&p, Class::Ink), p.neutral);
         assert_eq!(class_color(&p, Class::Yellow), p.yellow);
         assert_eq!(class_color(&p, Class::Red), p.red);
         assert_eq!(class_color(&p, Class::Blue), p.blue);
@@ -237,40 +237,40 @@ mod tests {
     #[test]
     fn ribbon_draws_a_soft_shadow_and_an_ink_band() {
         let mesh = draw(ribbon(End::Source, End::Goal));
-        let p = Palette::paper();
-        assert_eq!(band_vertices(&mesh, p.ink), 42);
-        assert_eq!(band_vertices(&mesh, p.ink.with_alpha(SHADOW_ALPHA)), 42);
+        let p = Palette::video();
+        assert_eq!(band_vertices(&mesh, p.neutral), 42);
+        assert_eq!(band_vertices(&mesh, p.neutral.with_alpha(SHADOW_ALPHA)), 42);
         let shadow = mesh
             .vertices
             .iter()
-            .find(|v| v.color == p.ink.with_alpha(SHADOW_ALPHA).premultiplied())
+            .find(|v| v.color == p.neutral.with_alpha(SHADOW_ALPHA).premultiplied())
             .unwrap();
         assert_eq!(shadow.shape[3], SHADOW_SOFT);
     }
 
     #[test]
     fn source_is_a_disc_and_goal_is_a_ring() {
-        let p = Palette::paper();
+        let p = Palette::video();
         let mesh = draw(ribbon(End::Source, End::Goal));
-        let source = quads(&mesh, Kind::Disc, p.ink);
+        let source = quads(&mesh, Kind::Disc, p.neutral);
         assert_eq!(source.len(), 1);
         assert!(source[0].distance(Vec2::new(-1.0, 0.0)) < 1e-4);
-        let goal = quads(&mesh, Kind::Ring, p.ink);
+        let goal = quads(&mesh, Kind::Ring, p.neutral);
         assert_eq!(goal.len(), 1);
         assert!(goal[0].distance(Vec2::new(1.0, 0.0)) < 1e-4);
     }
 
     #[test]
     fn dead_end_is_a_rivet() {
-        let p = Palette::paper();
+        let p = Palette::video();
         let mesh = draw(ribbon(End::Cap, End::Goal));
-        assert_eq!(quads(&mesh, Kind::Disc, p.ink).len(), 1);
+        assert_eq!(quads(&mesh, Kind::Disc, p.neutral).len(), 1);
         assert_eq!(quads(&mesh, Kind::Disc, p.ground).len(), 1);
     }
 
     #[test]
     fn open_ends_wear_their_class_cap_beyond_the_end() {
-        let p = Palette::paper();
+        let p = Palette::video();
         let cases = [
             (Class::Red, Kind::Square, p.red),
             (Class::Yellow, Kind::Triangle, p.yellow),
@@ -286,15 +286,15 @@ mod tests {
 
     #[test]
     fn ink_open_end_is_a_flat_bar_across_the_end() {
-        let p = Palette::paper();
+        let p = Palette::video();
         let mesh = draw(ribbon(End::Source, End::Open(Class::Ink)));
-        assert_eq!(band_vertices(&mesh, p.ink), 42 + 4);
+        assert_eq!(band_vertices(&mesh, p.neutral), 42 + 4);
     }
 
     #[test]
     fn welded_ends_show_a_bead_and_no_caps() {
         use crate::world::{EndRef, Weld};
-        let p = Palette::paper();
+        let p = Palette::video();
         let a = Ribbon::new(
             &[Vec2::new(-1.0, 0.0), Vec2::ZERO],
             0.1,
@@ -340,7 +340,7 @@ mod tests {
 
     #[test]
     fn traveler_draws_a_white_core_without_a_halo() {
-        let p = Palette::paper();
+        let p = Palette::video();
         let world = line_world();
         let traveler = Traveler::new(&world).unwrap();
         let mut mesh = Mesh::new(0.01);
@@ -353,7 +353,7 @@ mod tests {
 
     #[test]
     fn halo_glows_at_the_traveler() {
-        let p = Palette::paper();
+        let p = Palette::video();
         let world = line_world();
         let traveler = Traveler::new(&world).unwrap();
         let mut mesh = Mesh::new(0.01);
@@ -365,7 +365,7 @@ mod tests {
 
     #[test]
     fn world_draws_shadows_before_ribbons() {
-        let p = Palette::paper();
+        let p = Palette::video();
         let world = line_world();
         let mut shadows = Mesh::new(0.01);
         draw_shadows(&world, &p, &mut shadows);
@@ -386,7 +386,7 @@ mod tests {
     #[test]
     fn tether_follows_each_traveled_span() {
         use crate::traveler::Span;
-        let p = Palette::paper();
+        let p = Palette::video();
         let world = line_world();
         let mut traveler = Traveler::new(&world).unwrap();
         traveler.tether = vec![Span {

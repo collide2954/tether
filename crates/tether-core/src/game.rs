@@ -209,7 +209,7 @@ mod tests {
     fn draw_puts_the_halo_under_the_ribbons_and_the_core_on_top() {
         use crate::mesh::Kind;
         let game = Game::new(0);
-        let palette = Palette::paper();
+        let palette = Palette::video();
         let mut mesh = Mesh::new(0.01);
         game.draw(&palette, &mut mesh);
         let kind = |k: Kind| k as u32 as f32;
@@ -217,8 +217,9 @@ mod tests {
             mesh.vertices.iter().position(test).expect("vertex")
         };
         let glow = first(&|v| v.shape[0] == kind(Kind::Glow));
-        let ink =
-            first(&|v| v.shape[0] == kind(Kind::Band) && v.color == palette.ink.premultiplied());
+        let ink = first(&|v| {
+            v.shape[0] == kind(Kind::Band) && v.color == palette.neutral.premultiplied()
+        });
         let core =
             first(&|v| v.shape[0] == kind(Kind::Disc) && v.color == palette.pulse.premultiplied());
         assert!(glow < ink && ink < core);
@@ -242,7 +243,7 @@ mod tests {
     fn draw_covers_the_frame_with_the_veil() {
         use crate::mesh::Kind;
         let game = Game::new(0);
-        let palette = Palette::paper();
+        let palette = Palette::video();
         let mut mesh = Mesh::new(0.01);
         game.draw(&palette, &mut mesh);
         let last = mesh.vertices.last().expect("vertex");

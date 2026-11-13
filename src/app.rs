@@ -141,7 +141,7 @@ const DRAG_TIME: f32 = 1.0;
 pub fn capture(capture: &Capture) -> Result<(), String> {
     let size = Vec2::new(capture.width as f32, capture.height as f32);
     let camera = Camera::fit(FRAME, size);
-    let palette = Palette::paper();
+    let palette = Palette::video();
     let mut game = Game::new(capture.level);
     let steps = (capture.at / STEP).round() as usize;
     let drag_steps = (DRAG_TIME / STEP).round() as usize;
@@ -235,7 +235,7 @@ impl ApplicationHandler for App {
             camera: Camera::fit(FRAME, gpu.size()),
             gpu,
             mesh: Mesh::default(),
-            palette: Palette::paper(),
+            palette: Palette::video(),
             game: Game::new(0),
             cursor: Vec2::ZERO,
             last: Instant::now(),

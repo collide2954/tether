@@ -3,18 +3,23 @@ use crate::level::{LEVELS, Level};
 use crate::math::Vec2;
 use crate::mesh::Mesh;
 use crate::ribbon::Side;
-use crate::scene::draw_world;
+use crate::scene::{draw_traveler, draw_world};
+use crate::traveler::{Moment, Traveler};
 use crate::world::{EndRef, Grip, World};
 
 pub const STEP: f32 = 1.0 / 120.0;
 pub const MAX_FRAME: f32 = 0.25;
 pub const GRAB_RADIUS: f32 = 0.45;
+pub const HOLD: f32 = 1.8;
 
 #[derive(Clone, Debug)]
 pub struct Game {
     pub world: World,
+    pub traveler: Option<Traveler>,
     pub level: usize,
     pub time: f32,
+    pub complete: Option<f32>,
+    pub moments: Vec<Moment>,
     accumulator: f32,
 }
 
@@ -24,11 +29,43 @@ impl Game {
         let world = Level::parse(LEVELS[level])
             .map(|l| l.build())
             .unwrap_or_default();
+        Self::with_world(world, level)
+    }
+
+    pub fn with_world(world: World, level: usize) -> Self {
         Self {
+            traveler: Traveler::new(&world),
             world,
             level,
             time: 0.0,
+            complete: None,
+            moments: Vec::new(),
             accumulator: 0.0,
+        }
+    }
+
+    fn step(&mut self) {
+        self.world.step(STEP);
+        self.time += STEP;
+        if let Some(traveler) = &mut self.traveler {
+            let moments = traveler.step(&self.world, STEP);
+            if moments.contains(&Moment::Arrived) {
+                self.complete = Some(0.0);
+            }
+            self.moments.extend(moments);
+        }
+        if let Some(held) = self.complete {
+            if held + STEP >= HOLD {
+                let next = Self::new(self.level + 1);
+                let (time, moments) = (self.time, std::mem::take(&mut self.moments));
+                *self = Self {
+                    time,
+                    moments,
+                    ..next
+                };
+            } else {
+                self.complete = Some(held + STEP);
+            }
         }
     }
 
@@ -37,14 +74,16 @@ impl Game {
         let mut steps = 0;
         while self.accumulator + 1e-6 >= STEP {
             self.accumulator = (self.accumulator - STEP).max(0.0);
-            self.world.step(STEP);
-            self.time += STEP;
+            self.step();
             steps += 1;
         }
         steps
     }
 
     pub fn pointer_down(&mut self, at: Vec2) {
+        if self.complete.is_some() {
+            return;
+        }
         let mut best: Option<(f32, EndRef)> = None;
         for (ribbon, r) in self.world.ribbons.iter().enumerate() {
             for side in [Side::Head, Side::Tail] {
@@ -72,15 +111,79 @@ impl Game {
 
     pub fn draw(&self, palette: &Palette, mesh: &mut Mesh) {
         draw_world(&self.world, palette, self.time, mesh);
+        if let Some(traveler) = &self.traveler {
+            draw_traveler(&self.world, traveler, palette, self.time, mesh);
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::traveler::{PAUSE, Phase};
 
     fn open_tail(game: &Game) -> Vec2 {
         game.world.ribbons[0].end_pos(Side::Tail)
+    }
+
+    fn short_line() -> World {
+        Level::parse("(ribbons: [(points: [(-0.5, 0.0), (0.5, 0.0)], head: Source, tail: Goal)])")
+            .unwrap()
+            .build()
+    }
+
+    #[test]
+    fn new_game_places_the_traveler_at_the_source() {
+        let game = Game::new(0);
+        let t = game.traveler.as_ref().expect("traveler");
+        assert!(matches!(t.phase, Phase::Waiting { .. }));
+        assert!(game.complete.is_none());
+    }
+
+    #[test]
+    fn advance_moves_the_traveler() {
+        let mut game = Game::new(0);
+        for _ in 0..((PAUSE + 0.3) / 0.1) as usize {
+            game.advance(0.1);
+        }
+        assert_eq!(game.traveler.as_ref().unwrap().phase, Phase::Moving);
+        assert!(game.moments.contains(&Moment::Departed));
+    }
+
+    #[test]
+    fn arrival_completes_the_level() {
+        let mut game = Game::with_world(short_line(), 0);
+        for _ in 0..12 {
+            game.advance(0.15);
+        }
+        assert!(game.complete.is_some());
+        assert!(game.moments.contains(&Moment::Arrived));
+    }
+
+    #[test]
+    fn completed_level_folds_into_the_next_after_a_hold() {
+        let mut game = Game::with_world(short_line(), 0);
+        for _ in 0..12 {
+            game.advance(0.15);
+        }
+        for _ in 0..((HOLD / 0.2) as usize + 2) {
+            game.advance(0.2);
+        }
+        assert_eq!(game.level, 1 % LEVELS.len());
+        assert!(game.complete.is_none());
+        assert!(matches!(
+            game.traveler.as_ref().unwrap().phase,
+            Phase::Waiting { .. }
+        ));
+    }
+
+    #[test]
+    fn pointer_does_nothing_after_completion() {
+        let mut game = Game::new(0);
+        game.complete = Some(0.0);
+        let tail = open_tail(&game);
+        game.pointer_down(tail);
+        assert!(game.world.grip.is_none());
     }
 
     #[test]

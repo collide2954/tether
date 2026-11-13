@@ -1,8 +1,9 @@
 use crate::math::{Vec2, signed_angle, smoothstep};
+use serde::Deserialize;
 
 pub const RAMP: f32 = 0.6;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Deserialize)]
 pub enum Class {
     Ink,
     Yellow,
@@ -10,7 +11,7 @@ pub enum Class {
     Blue,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Deserialize)]
 pub enum End {
     Source,
     Goal,

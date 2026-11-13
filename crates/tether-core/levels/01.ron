@@ -1,0 +1,6 @@
+(
+    ribbons: [
+        (points: [(-6.0, -0.6), (-1.2, -0.6)], head: Source, tail: Open(Ink)),
+        (points: [(1.2, 0.6), (6.0, 0.6)], head: Open(Ink), tail: Goal),
+    ],
+)

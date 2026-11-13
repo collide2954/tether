@@ -3,7 +3,7 @@ use crate::level::{LEVELS, Level};
 use crate::math::Vec2;
 use crate::mesh::Mesh;
 use crate::ribbon::Side;
-use crate::scene::{draw_traveler, draw_world};
+use crate::scene::{draw_halo, draw_ribbons, draw_shadows, draw_traveler};
 use crate::traveler::{Moment, Traveler};
 use crate::world::{EndRef, Grip, World};
 
@@ -110,7 +110,11 @@ impl Game {
     }
 
     pub fn draw(&self, palette: &Palette, mesh: &mut Mesh) {
-        draw_world(&self.world, palette, self.time, mesh);
+        draw_shadows(&self.world, palette, mesh);
+        if let Some(traveler) = &self.traveler {
+            draw_halo(&self.world, traveler, palette, self.time, mesh);
+        }
+        draw_ribbons(&self.world, palette, self.time, mesh);
         if let Some(traveler) = &self.traveler {
             draw_traveler(&self.world, traveler, palette, self.time, mesh);
         }
@@ -175,6 +179,25 @@ mod tests {
             game.traveler.as_ref().unwrap().phase,
             Phase::Waiting { .. }
         ));
+    }
+
+    #[test]
+    fn draw_puts_the_halo_under_the_ribbons_and_the_core_on_top() {
+        use crate::mesh::Kind;
+        let game = Game::new(0);
+        let palette = Palette::paper();
+        let mut mesh = Mesh::new(0.01);
+        game.draw(&palette, &mut mesh);
+        let kind = |k: Kind| k as u32 as f32;
+        let first = |test: &dyn Fn(&crate::mesh::Vertex) -> bool| {
+            mesh.vertices.iter().position(test).expect("vertex")
+        };
+        let glow = first(&|v| v.shape[0] == kind(Kind::Glow));
+        let ink =
+            first(&|v| v.shape[0] == kind(Kind::Band) && v.color == palette.ink.premultiplied());
+        let core =
+            first(&|v| v.shape[0] == kind(Kind::Disc) && v.color == palette.pulse.premultiplied());
+        assert!(glow < ink && ink < core);
     }
 
     #[test]

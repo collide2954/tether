@@ -32,14 +32,31 @@ pub fn draw_traveler(
             palette.halo,
         );
     }
-    let at = traveler.position(world);
+    let pulse = 1.0 + 0.08 * (time * 6.0).sin();
+    mesh.disc(
+        traveler.position(world),
+        PULSE_RADIUS * pulse,
+        palette.pulse,
+    );
+}
+
+pub fn draw_halo(
+    world: &World,
+    traveler: &Traveler,
+    palette: &Palette,
+    time: f32,
+    mesh: &mut Mesh,
+) {
     let ready = match traveler.phase {
         Phase::Waiting { left } => (1.0 - left / PAUSE).clamp(0.0, 1.0),
         _ => 1.0,
     };
     let radius = HALO_RADIUS * (0.6 + 0.4 * ready) * (1.0 + 0.05 * (time * 6.0).sin());
-    mesh.glow(at, radius, palette.halo.with_alpha(HALO_ALPHA));
-    mesh.disc(at, PULSE_RADIUS, palette.pulse);
+    mesh.glow(
+        traveler.position(world),
+        radius,
+        palette.halo.with_alpha(HALO_ALPHA),
+    );
 }
 
 fn span_points(world: &World, span: &Span) -> Vec<Vec2> {
@@ -92,6 +109,11 @@ pub fn half_widths(r: &Ribbon) -> Vec<f32> {
 }
 
 pub fn draw_world(world: &World, palette: &Palette, time: f32, mesh: &mut Mesh) {
+    draw_shadows(world, palette, mesh);
+    draw_ribbons(world, palette, time, mesh);
+}
+
+pub fn draw_shadows(world: &World, palette: &Palette, mesh: &mut Mesh) {
     let soft = mesh.soft;
     mesh.soft = SHADOW_SOFT;
     let shadow = palette.ink.with_alpha(SHADOW_ALPHA);
@@ -100,6 +122,9 @@ pub fn draw_world(world: &World, palette: &Palette, time: f32, mesh: &mut Mesh) 
         mesh.band(&lifted, &half_widths(r), shadow);
     }
     mesh.soft = soft;
+}
+
+pub fn draw_ribbons(world: &World, palette: &Palette, time: f32, mesh: &mut Mesh) {
     for (ribbon, r) in world.ribbons.iter().enumerate() {
         mesh.band(&r.pos, &half_widths(r), palette.ink);
         for side in [Side::Head, Side::Tail] {
@@ -314,7 +339,7 @@ mod tests {
     }
 
     #[test]
-    fn traveler_draws_a_white_core_and_a_warm_halo() {
+    fn traveler_draws_a_white_core_without_a_halo() {
         let p = Palette::paper();
         let world = line_world();
         let traveler = Traveler::new(&world).unwrap();
@@ -323,9 +348,38 @@ mod tests {
         let core = quads(&mesh, Kind::Disc, p.pulse);
         assert_eq!(core.len(), 1);
         assert!(core[0].distance(Vec2::new(-2.0, 0.0)) < 1e-4);
+        assert!(quads(&mesh, Kind::Glow, p.halo.with_alpha(HALO_ALPHA)).is_empty());
+    }
+
+    #[test]
+    fn halo_glows_at_the_traveler() {
+        let p = Palette::paper();
+        let world = line_world();
+        let traveler = Traveler::new(&world).unwrap();
+        let mut mesh = Mesh::new(0.01);
+        draw_halo(&world, &traveler, &p, 0.0, &mut mesh);
+        let glow = quads(&mesh, Kind::Glow, p.halo.with_alpha(HALO_ALPHA));
+        assert_eq!(glow.len(), 1);
+        assert!(glow[0].distance(Vec2::new(-2.0, 0.0)) < 1e-4);
+    }
+
+    #[test]
+    fn world_draws_shadows_before_ribbons() {
+        let p = Palette::paper();
+        let world = line_world();
+        let mut shadows = Mesh::new(0.01);
+        draw_shadows(&world, &p, &mut shadows);
+        let mut ribbons = Mesh::new(0.01);
+        draw_ribbons(&world, &p, 0.0, &mut ribbons);
+        let mut both = Mesh::new(0.01);
+        draw_world(&world, &p, 0.0, &mut both);
         assert_eq!(
-            quads(&mesh, Kind::Glow, p.halo.with_alpha(HALO_ALPHA)).len(),
-            1
+            both.vertices.len(),
+            shadows.vertices.len() + ribbons.vertices.len()
+        );
+        assert_eq!(
+            both.vertices[..shadows.vertices.len()],
+            shadows.vertices[..]
         );
     }
 

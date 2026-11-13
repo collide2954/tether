@@ -7,4 +7,5 @@ pub mod mesh;
 pub mod png;
 pub mod ribbon;
 pub mod scene;
+pub mod traveler;
 pub mod world;

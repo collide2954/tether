@@ -1,26 +1,37 @@
 use bytemuck::{Pod, Zeroable};
-use tether_core::camera::Camera;
-use tether_core::color::Rgba;
+use tether_core::color::Palette;
 use tether_core::mesh::{Mesh, Vertex};
+use tether_core::view::View;
+
+pub const WARPS: usize = 8;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Pod, Zeroable)]
 pub struct Globals {
-    pub clip: [f32; 4],
+    pub view_proj: [[f32; 4]; 4],
+    pub inverse: [[f32; 4]; 4],
+    pub eye: [f32; 4],
     pub ground: [f32; 4],
-    pub viewport: [f32; 2],
-    pub pixel: f32,
-    pub time: f32,
+    pub lattice: [f32; 4],
+    pub viewport: [f32; 4],
+    pub warps: [[f32; 4]; WARPS],
 }
 
 impl Globals {
-    pub fn new(camera: &Camera, ground: Rgba, time: f32) -> Self {
+    pub fn new(view: &View, palette: &Palette, time: f32, warps: &[[f32; 4]]) -> Self {
+        let view_proj = view.view_proj();
+        let count = warps.len().min(WARPS);
+        let mut list = [[0.0; 4]; WARPS];
+        list[..count].copy_from_slice(&warps[..count]);
+        let (g, l) = (palette.ground, palette.lattice);
         Self {
-            clip: camera.clip_transform(),
-            ground: [ground.r, ground.g, ground.b, 1.0],
-            viewport: camera.viewport.into(),
-            pixel: camera.pixel_size(),
-            time,
+            view_proj: view_proj.to_cols_array_2d(),
+            inverse: view_proj.inverse().to_cols_array_2d(),
+            eye: view.eye().extend(time).to_array(),
+            ground: [g.r, g.g, g.b, 1.0],
+            lattice: [l.r, l.g, l.b, 1.0],
+            viewport: [view.viewport.x, view.viewport.y, count as f32, 0.0],
+            warps: list,
         }
     }
 }
@@ -37,7 +48,7 @@ const VERTEX_LAYOUT: wgpu::VertexBufferLayout<'static> = wgpu::VertexBufferLayou
 pub struct Renderer {
     globals: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
-    paper: wgpu::RenderPipeline,
+    ground: wgpu::RenderPipeline,
     shapes: wgpu::RenderPipeline,
     vertices: wgpu::Buffer,
     indices: wgpu::Buffer,
@@ -77,9 +88,9 @@ impl Renderer {
             bind_group_layouts: &[Some(&layout)],
             immediate_size: 0,
         });
-        let paper_module = device.create_shader_module(wgpu::include_wgsl!("shaders/paper.wgsl"));
+        let ground_module = device.create_shader_module(wgpu::include_wgsl!("shaders/ground.wgsl"));
         let shapes_module = device.create_shader_module(wgpu::include_wgsl!("shaders/shapes.wgsl"));
-        let paper = pipeline(device, &pipeline_layout, &paper_module, &[], format, None);
+        let ground = pipeline(device, &pipeline_layout, &ground_module, &[], format, None);
         let shapes = pipeline(
             device,
             &pipeline_layout,
@@ -91,7 +102,7 @@ impl Renderer {
         Self {
             globals,
             bind_group,
-            paper,
+            ground,
             shapes,
             vertices: buffer(device, "vertices", wgpu::BufferUsages::VERTEX, 1 << 16),
             indices: buffer(device, "indices", wgpu::BufferUsages::INDEX, 1 << 16),
@@ -148,7 +159,7 @@ impl Renderer {
             ..Default::default()
         });
         pass.set_bind_group(0, &self.bind_group, &[]);
-        pass.set_pipeline(&self.paper);
+        pass.set_pipeline(&self.ground);
         pass.draw(0..3, 0..1);
         if !index_bytes.is_empty() {
             pass.set_pipeline(&self.shapes);
@@ -228,6 +239,7 @@ fn grow(
 mod tests {
     use super::*;
     use std::mem::offset_of;
+    use tether_core::math::{Mat4, Vec2};
 
     fn parse(source: &str) -> naga::Module {
         let module = naga::front::wgsl::parse_str(source).expect("WGSL parse");
@@ -257,11 +269,13 @@ mod tests {
 
     fn rust_offsets() -> (u32, Vec<u32>) {
         let offsets = [
-            offset_of!(Globals, clip),
+            offset_of!(Globals, view_proj),
+            offset_of!(Globals, inverse),
+            offset_of!(Globals, eye),
             offset_of!(Globals, ground),
+            offset_of!(Globals, lattice),
             offset_of!(Globals, viewport),
-            offset_of!(Globals, pixel),
-            offset_of!(Globals, time),
+            offset_of!(Globals, warps),
         ];
         (
             size_of::<Globals>() as u32,
@@ -270,8 +284,8 @@ mod tests {
     }
 
     #[test]
-    fn paper_shader_is_valid_and_matches_globals() {
-        let module = parse(include_str!("shaders/paper.wgsl"));
+    fn ground_shader_is_valid_and_matches_globals() {
+        let module = parse(include_str!("shaders/ground.wgsl"));
         assert_eq!(globals_offsets(&module), rust_offsets());
     }
 
@@ -289,16 +303,26 @@ mod tests {
     }
 
     #[test]
-    fn globals_take_camera_values() {
-        let camera = Camera::fit(
-            tether_core::camera::FRAME,
-            tether_core::math::Vec2::new(1920.0, 1080.0),
-        );
-        let g = Globals::new(&camera, Rgba::new(0.5, 0.25, 0.125, 0.3), 2.0);
-        assert_eq!(g.clip, camera.clip_transform());
-        assert_eq!(g.ground, [0.5, 0.25, 0.125, 1.0]);
-        assert_eq!(g.viewport, [1920.0, 1080.0]);
-        assert_eq!(g.pixel, camera.pixel_size());
-        assert_eq!(g.time, 2.0);
+    fn globals_carry_the_view_and_palette() {
+        let mut view = View::new(Vec2::new(1920.0, 1080.0));
+        view.target = Vec2::new(1.0, -2.0);
+        let palette = Palette::video();
+        let g = Globals::new(&view, &palette, 2.5, &[]);
+        assert_eq!(g.view_proj, view.view_proj().to_cols_array_2d());
+        let product = Mat4::from_cols_array_2d(&g.inverse) * view.view_proj();
+        assert!(product.abs_diff_eq(Mat4::IDENTITY, 1e-3));
+        assert_eq!(g.eye, view.eye().extend(2.5).to_array());
+        let (gr, la) = (palette.ground, palette.lattice);
+        assert_eq!(g.ground, [gr.r, gr.g, gr.b, 1.0]);
+        assert_eq!(g.lattice, [la.r, la.g, la.b, 1.0]);
+        assert_eq!(g.viewport, [1920.0, 1080.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn globals_keep_at_most_eight_warps() {
+        let warps = [[1.0, 2.0, 0.3, 0.5]; 10];
+        let g = Globals::new(&View::new(Vec2::ONE), &Palette::video(), 0.0, &warps);
+        assert_eq!(g.viewport[2], WARPS as f32);
+        assert_eq!(g.warps[7], [1.0, 2.0, 0.3, 0.5]);
     }
 }

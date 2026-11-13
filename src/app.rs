@@ -8,11 +8,11 @@ use tether_core::audio::preview;
 use tether_core::audio::score::Score;
 use tether_core::audio::synth::Command;
 use tether_core::audio::wav::encode_wav;
-use tether_core::camera::{Camera, FRAME};
 use tether_core::color::Palette;
 use tether_core::game::{Game, STEP};
 use tether_core::math::Vec2;
 use tether_core::mesh::Mesh;
+use tether_core::view::View;
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::{ElementState, MouseButton, TouchPhase, WindowEvent};
@@ -137,10 +137,11 @@ pub fn is_fullscreen_toggle(key: &Key, mods: ModifiersState) -> bool {
 }
 
 const DRAG_TIME: f32 = 1.0;
+const FEATHER: f32 = 1.5;
 
 pub fn capture(capture: &Capture) -> Result<(), String> {
     let size = Vec2::new(capture.width as f32, capture.height as f32);
-    let camera = Camera::fit(FRAME, size);
+    let view = View::new(size);
     let palette = Palette::video();
     let mut game = Game::new(capture.level);
     let steps = (capture.at / STEP).round() as usize;
@@ -154,9 +155,9 @@ pub fn capture(capture: &Capture) -> Result<(), String> {
         }
         game.advance(STEP);
     }
-    let mut mesh = Mesh::new(camera.pixel_size());
+    let mut mesh = Mesh::new(view.pixel_size() * FEATHER);
     game.draw(&palette, &mut mesh);
-    let globals = Globals::new(&camera, palette.ground, game.time);
+    let globals = Globals::new(&view, &palette, game.time, &[]);
     let rgba = pollster::block_on(crate::gpu::capture(
         capture.width,
         capture.height,
@@ -207,7 +208,8 @@ struct Running {
     mesh: Mesh,
     palette: Palette,
     game: Game,
-    camera: Camera,
+    view: View,
+    screen: Vec2,
     cursor: Vec2,
     last: Instant,
     sound: Option<Sound>,
@@ -232,7 +234,8 @@ impl ApplicationHandler for App {
         window.request_redraw();
         self.running = Some(Running {
             window,
-            camera: Camera::fit(FRAME, gpu.size()),
+            view: View::new(gpu.size()),
+            screen: Vec2::ZERO,
             gpu,
             mesh: Mesh::default(),
             palette: Palette::video(),
@@ -300,8 +303,11 @@ impl Running {
     }
 
     fn pointer_move(&mut self, screen: Vec2) {
-        self.cursor = self.camera.screen_to_world(screen);
-        self.game.pointer_move(self.cursor);
+        self.screen = screen;
+        if let Some(at) = self.view.pick(screen, 0.0) {
+            self.cursor = at;
+            self.game.pointer_move(at);
+        }
     }
 
     fn toggle_mute(&mut self) {
@@ -319,11 +325,11 @@ impl Running {
         if let Some(sound) = &self.sound {
             sound.send(commands);
         }
-        self.camera = Camera::fit(FRAME, self.gpu.size());
-        self.mesh.feather = self.camera.pixel_size();
+        self.view.viewport = self.gpu.size();
+        self.mesh.feather = self.view.pixel_size() * FEATHER;
         self.mesh.clear();
         self.game.draw(&self.palette, &mut self.mesh);
-        let globals = Globals::new(&self.camera, self.palette.ground, self.game.time);
+        let globals = Globals::new(&self.view, &self.palette, self.game.time, &[]);
         self.gpu.render(&globals, &self.mesh);
     }
 }

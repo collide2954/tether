@@ -1,4 +1,4 @@
-pub use glam::Vec2;
+pub use glam::{Mat4, Vec2, Vec3};
 
 use std::f32::consts::{PI, TAU};
 

@@ -1,9 +1,11 @@
 struct Globals {
-    clip: vec4<f32>,
+    view_proj: mat4x4<f32>,
+    inverse: mat4x4<f32>,
+    eye: vec4<f32>,
     ground: vec4<f32>,
-    viewport: vec2<f32>,
-    pixel: f32,
-    time: f32,
+    lattice: vec4<f32>,
+    viewport: vec4<f32>,
+    warps: array<vec4<f32>, 8>,
 }
 
 @group(0) @binding(0) var<uniform> globals: Globals;
@@ -25,7 +27,7 @@ struct VertexOutput {
 @vertex
 fn vs_main(v: VertexInput) -> VertexOutput {
     var out: VertexOutput;
-    out.position = vec4<f32>(v.position.xy * globals.clip.xy + globals.clip.zw, 0.0, 1.0);
+    out.position = globals.view_proj * vec4<f32>(v.position, 1.0);
     out.local = v.local;
     out.color = v.color;
     out.shape = v.shape;

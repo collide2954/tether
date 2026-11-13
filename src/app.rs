@@ -105,8 +105,9 @@ impl Options {
     }
 }
 
-pub fn is_mute_key(key: &Key) -> bool {
-    matches!(key, Key::Character(c) if c.eq_ignore_ascii_case("m"))
+pub fn is_mute_key(key: &Key, mods: ModifiersState) -> bool {
+    let chord = mods.super_key() || mods.control_key() || mods.alt_key();
+    !chord && matches!(key, Key::Character(c) if c.eq_ignore_ascii_case("m"))
 }
 
 fn parse_drag(text: &str) -> Option<(Vec2, Vec2)> {
@@ -257,7 +258,7 @@ impl ApplicationHandler for App {
             {
                 if is_fullscreen_toggle(&event.logical_key, self.modifiers) {
                     running.toggle_fullscreen();
-                } else if is_mute_key(&event.logical_key) {
+                } else if is_mute_key(&event.logical_key, self.modifiers) {
                     running.toggle_mute();
                 }
             }
@@ -432,10 +433,22 @@ mod tests {
 
     #[test]
     fn m_toggles_mute() {
-        assert!(is_mute_key(&Key::Character(SmolStr::new("m"))));
-        assert!(is_mute_key(&Key::Character(SmolStr::new("M"))));
-        assert!(!is_mute_key(&Key::Character(SmolStr::new("n"))));
-        assert!(!is_mute_key(&Key::Named(NamedKey::Escape)));
+        let none = ModifiersState::empty();
+        assert!(is_mute_key(&Key::Character(SmolStr::new("m")), none));
+        assert!(is_mute_key(
+            &Key::Character(SmolStr::new("M")),
+            ModifiersState::SHIFT
+        ));
+        assert!(!is_mute_key(&Key::Character(SmolStr::new("n")), none));
+        assert!(!is_mute_key(&Key::Named(NamedKey::Escape), none));
+    }
+
+    #[test]
+    fn m_with_command_or_control_is_not_mute() {
+        let m = Key::Character(SmolStr::new("m"));
+        assert!(!is_mute_key(&m, ModifiersState::SUPER));
+        assert!(!is_mute_key(&m, ModifiersState::CONTROL));
+        assert!(!is_mute_key(&m, ModifiersState::ALT));
     }
 
     #[test]

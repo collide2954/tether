@@ -1,8 +1,13 @@
 use crate::gpu::Gpu;
 use crate::render::Globals;
-use std::path::PathBuf;
+use crate::sound::Sound;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
+use tether_core::audio::preview;
+use tether_core::audio::score::Score;
+use tether_core::audio::synth::Command;
+use tether_core::audio::wav::encode_wav;
 use tether_core::camera::{Camera, FRAME};
 use tether_core::color::Palette;
 use tether_core::game::{Game, STEP};
@@ -19,6 +24,16 @@ use winit::window::{Fullscreen, Window, WindowId};
 pub struct Options {
     pub windowed: bool,
     pub capture: Option<Capture>,
+    pub listen: Option<Listen>,
+    pub catalog: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Listen {
+    pub path: PathBuf,
+    pub at: f32,
+    pub drag: Option<(Vec2, Vec2)>,
+    pub level: usize,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -35,7 +50,9 @@ impl Options {
     pub fn parse(args: impl IntoIterator<Item = String>) -> Self {
         let mut windowed = false;
         let mut path = None;
-        let mut at = 0.0;
+        let mut listen = None;
+        let mut catalog = None;
+        let mut at = None;
         let mut size = (1920, 1080);
         let mut drag = None;
         let mut level = 0;
@@ -44,9 +61,11 @@ impl Options {
             match arg.as_str() {
                 "--windowed" => windowed = true,
                 "--capture" => path = args.next().map(PathBuf::from),
+                "--listen" => listen = args.next().map(PathBuf::from),
+                "--catalog" => catalog = args.next().map(PathBuf::from),
                 "--at" => {
                     if let Some(value) = args.next().and_then(|s| s.parse().ok()) {
-                        at = value;
+                        at = Some(value);
                     }
                 }
                 "--size" => {
@@ -65,14 +84,29 @@ impl Options {
         }
         let capture = path.map(|path| Capture {
             path,
-            at,
+            at: at.unwrap_or(0.0),
             width: size.0,
             height: size.1,
             drag,
             level,
         });
-        Self { windowed, capture }
+        let listen = listen.map(|path| Listen {
+            path,
+            at: at.unwrap_or(6.0),
+            drag,
+            level,
+        });
+        Self {
+            windowed,
+            capture,
+            listen,
+            catalog,
+        }
     }
+}
+
+pub fn is_mute_key(key: &Key) -> bool {
+    matches!(key, Key::Character(c) if c.eq_ignore_ascii_case("m"))
 }
 
 fn parse_drag(text: &str) -> Option<(Vec2, Vec2)> {
@@ -132,6 +166,22 @@ pub fn capture(capture: &Capture) -> Result<(), String> {
     std::fs::write(&capture.path, png).map_err(|e| e.to_string())
 }
 
+const AUDIO_RATE: u32 = 48_000;
+
+pub fn catalog(path: &Path) -> Result<(), String> {
+    let samples = preview::render_timeline(
+        &preview::catalog(),
+        preview::CATALOG_SECONDS,
+        AUDIO_RATE as f32,
+    );
+    std::fs::write(path, encode_wav(AUDIO_RATE, 2, &samples)).map_err(|e| e.to_string())
+}
+
+pub fn listen(listen: &Listen) -> Result<(), String> {
+    let samples = preview::listen(listen.level, listen.drag, listen.at, AUDIO_RATE as f32);
+    std::fs::write(&listen.path, encode_wav(AUDIO_RATE, 2, &samples)).map_err(|e| e.to_string())
+}
+
 pub fn run(options: Options) -> Result<(), winit::error::EventLoopError> {
     let event_loop = EventLoop::new()?;
     let mut app = App {
@@ -159,6 +209,9 @@ struct Running {
     camera: Camera,
     cursor: Vec2,
     last: Instant,
+    sound: Option<Sound>,
+    score: Score,
+    muted: bool,
 }
 
 impl ApplicationHandler for App {
@@ -185,6 +238,9 @@ impl ApplicationHandler for App {
             game: Game::new(0),
             cursor: Vec2::ZERO,
             last: Instant::now(),
+            sound: Sound::start(),
+            score: Score::new(),
+            muted: false,
         });
     }
 
@@ -201,6 +257,8 @@ impl ApplicationHandler for App {
             {
                 if is_fullscreen_toggle(&event.logical_key, self.modifiers) {
                     running.toggle_fullscreen();
+                } else if is_mute_key(&event.logical_key) {
+                    running.toggle_mute();
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
@@ -245,10 +303,21 @@ impl Running {
         self.game.pointer_move(self.cursor);
     }
 
+    fn toggle_mute(&mut self) {
+        self.muted = !self.muted;
+        if let Some(sound) = &self.sound {
+            sound.send([Command::Master(if self.muted { 0.0 } else { 1.0 })]);
+        }
+    }
+
     fn frame(&mut self) {
         let now = Instant::now();
         self.game.advance((now - self.last).as_secs_f32());
         self.last = now;
+        let commands = self.score.listen(&mut self.game);
+        if let Some(sound) = &self.sound {
+            sound.send(commands);
+        }
         self.camera = Camera::fit(FRAME, self.gpu.size());
         self.mesh.feather = self.camera.pixel_size();
         self.mesh.clear();
@@ -329,6 +398,44 @@ mod tests {
         assert_eq!(options.capture.expect("capture").level, 3);
         let plain = Options::parse(args(&["--capture", "a.png"]));
         assert_eq!(plain.capture.expect("capture").level, 0);
+    }
+
+    #[test]
+    fn options_read_a_listen_run() {
+        let options = Options::parse(args(&[
+            "--listen", "a.wav", "--level", "2", "--at", "4", "--drag", "1,2,3,4",
+        ]));
+        let expected = Listen {
+            path: PathBuf::from("a.wav"),
+            at: 4.0,
+            drag: Some((Vec2::new(1.0, 2.0), Vec2::new(3.0, 4.0))),
+            level: 2,
+        };
+        assert_eq!(options.listen, Some(expected));
+        assert_eq!(options.capture, None);
+    }
+
+    #[test]
+    fn listen_defaults_to_six_seconds() {
+        let listen = Options::parse(args(&["--listen", "a.wav"]))
+            .listen
+            .expect("listen");
+        assert_eq!((listen.at, listen.level, listen.drag), (6.0, 0, None));
+    }
+
+    #[test]
+    fn options_read_a_catalog_path() {
+        let options = Options::parse(args(&["--catalog", "c.wav"]));
+        assert_eq!(options.catalog, Some(PathBuf::from("c.wav")));
+        assert_eq!(Options::parse(args(&[])).catalog, None);
+    }
+
+    #[test]
+    fn m_toggles_mute() {
+        assert!(is_mute_key(&Key::Character(SmolStr::new("m"))));
+        assert!(is_mute_key(&Key::Character(SmolStr::new("M"))));
+        assert!(!is_mute_key(&Key::Character(SmolStr::new("n"))));
+        assert!(!is_mute_key(&Key::Named(NamedKey::Escape)));
     }
 
     #[test]

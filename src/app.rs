@@ -93,18 +93,21 @@ pub fn is_fullscreen_toggle(key: &Key, mods: ModifiersState) -> bool {
     }
 }
 
+const DRAG_TIME: f32 = 1.0;
+
 pub fn capture(capture: &Capture) -> Result<(), String> {
     let size = Vec2::new(capture.width as f32, capture.height as f32);
     let camera = Camera::fit(FRAME, size);
     let palette = Palette::paper();
     let mut game = Game::new(0);
     let steps = (capture.at / STEP).round() as usize;
+    let drag_steps = (DRAG_TIME / STEP).round() as usize;
     if let Some((from, _)) = capture.drag {
         game.pointer_down(from);
     }
     for i in 0..steps {
         if let Some((from, to)) = capture.drag {
-            game.pointer_move(from.lerp(to, ((i + 1) as f32 / steps as f32).min(1.0)));
+            game.pointer_move(from.lerp(to, ((i + 1) as f32 / drag_steps as f32).min(1.0)));
         }
         game.advance(STEP);
     }

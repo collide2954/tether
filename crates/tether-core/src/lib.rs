@@ -2,6 +2,7 @@ pub mod audio;
 pub mod color;
 pub mod game;
 pub mod level;
+pub mod look;
 pub mod math;
 pub mod mesh;
 pub mod png;

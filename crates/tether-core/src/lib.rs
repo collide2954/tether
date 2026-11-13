@@ -1,5 +1,6 @@
 pub mod camera;
 pub mod color;
+pub mod game;
 pub mod level;
 pub mod math;
 pub mod mesh;

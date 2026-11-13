@@ -100,16 +100,37 @@ impl World {
     }
 
     pub fn magnet(&self, end: EndRef) -> Option<(EndRef, f32)> {
+        self.nearest_compatible(end, MAGNET_RADIUS)
+    }
+
+    pub fn nearest_compatible(&self, end: EndRef, range: f32) -> Option<(EndRef, f32)> {
+        self.nearest(end, range, |other| self.compatible(end, other))
+    }
+
+    pub fn nearest_clash(&self, end: EndRef, range: f32) -> Option<(EndRef, f32)> {
+        let class = |e: EndRef| self.ribbons[e.ribbon].end(e.side).class();
+        self.nearest(end, range, |other| match (class(end), class(other)) {
+            (Some(x), Some(y)) => other != end && x != y && self.partner(other).is_none(),
+            _ => false,
+        })
+    }
+
+    fn nearest(
+        &self,
+        end: EndRef,
+        range: f32,
+        wanted: impl Fn(EndRef) -> bool,
+    ) -> Option<(EndRef, f32)> {
         let at = self.end_pos(end);
         let mut best: Option<(EndRef, f32)> = None;
         for (ribbon, r) in self.ribbons.iter().enumerate() {
             for side in [Side::Head, Side::Tail] {
                 let other = EndRef { ribbon, side };
-                if !self.compatible(end, other) {
+                if !wanted(other) {
                     continue;
                 }
                 let d = r.end_pos(side).distance(at);
-                if d < MAGNET_RADIUS && best.is_none_or(|(_, nearest)| d < nearest) {
+                if d < range && best.is_none_or(|(_, nearest)| d < nearest) {
                     best = Some((other, d));
                 }
             }
@@ -553,6 +574,27 @@ mod tests {
         let (partner, distance) = w.magnet(A_TAIL).expect("magnet");
         assert_eq!(partner, B_HEAD);
         assert!((distance - Vec2::new(0.5, -0.1).length()).abs() < 1e-5);
+    }
+
+    #[test]
+    fn nearest_compatible_end_respects_the_range() {
+        let w = pair(End::Open(Class::Ink));
+        assert_eq!(w.nearest_compatible(A_TAIL, 0.9), None);
+        let (partner, distance) = w.nearest_compatible(A_TAIL, 1.1).expect("near");
+        assert_eq!(partner, B_HEAD);
+        assert!((distance - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn nearest_clash_finds_open_ends_of_another_class() {
+        let red = pair(End::Open(Class::Red));
+        let (other, distance) = red.nearest_clash(A_TAIL, 1.1).expect("clash");
+        assert_eq!(other, B_HEAD);
+        assert!((distance - 1.0).abs() < 1e-5);
+        let same = pair(End::Open(Class::Ink));
+        assert_eq!(same.nearest_clash(A_TAIL, 1.1), None);
+        let goal = pair(End::Goal);
+        assert_eq!(goal.nearest_clash(A_TAIL, 9.0), None);
     }
 
     #[test]

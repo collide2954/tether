@@ -20,6 +20,7 @@ The game has no text and no tutorial. Shape, color, motion, and sound show each 
 | Drag an open edge | Stretch the ribbon |
 | Drag a seam hard | Tear the weld open |
 | F11, Alt+Enter, or Control+Command+F | Change between fullscreen and a window |
+| M | Mute the sound or turn it on again |
 
 You can also use a touch screen.
 
@@ -76,6 +77,10 @@ You can also use a touch screen.
   | `--at` | The game time of the frame, in seconds. |
   | `--size` | The frame size in pixels, for example `1920x1080`. |
   | `--drag` | A drag from x0,y0 to x1,y1 in world units, during the first second. |
+  | `--listen` | A WAV file. The game plays the level with the drag and writes the sound. The default time is 6 s. |
+  | `--catalog` | A WAV file. The game writes a tour of all sounds. |
+
+- Refer to [docs/sound.md](docs/sound.md) for the sound design.
 - Refer to [docs/design.md](docs/design.md) for the game design.
 - Refer to [docs/model.md](docs/model.md) for the mathematical model.
 

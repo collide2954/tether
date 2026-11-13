@@ -1,0 +1,12 @@
+[package]
+name = "tether-core"
+description = "Game model for Tether. No platform code."
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license-file.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+glam = "0.34.3"

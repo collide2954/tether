@@ -1,11 +1,32 @@
-[package]
-name = "tether"
+[workspace]
+members = ["crates/tether-core"]
+resolver = "3"
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
-description = "An abstract puzzle game about folding space."
 authors = ["Brett Gilio"]
 license-file = "LICENSE"
 repository = "https://github.com/collide2954/tether"
 publish = false
 
+[package]
+name = "tether"
+description = "An abstract puzzle game about folding space."
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license-file.workspace = true
+repository.workspace = true
+publish.workspace = true
+
 [dependencies]
+tether-core = { path = "crates/tether-core" }
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = true

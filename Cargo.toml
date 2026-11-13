@@ -34,3 +34,6 @@ opt-level = 2
 lto = "fat"
 codegen-units = 1
 strip = true
+
+[dev-dependencies]
+naga = { version = "30.0.2", features = ["wgsl-in"] }

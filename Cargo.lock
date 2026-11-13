@@ -1648,6 +1648,7 @@ name = "tether"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
+ "naga",
  "pollster",
  "tether-core",
  "wgpu",

@@ -9,7 +9,7 @@ struct Globals {
 @group(0) @binding(0) var<uniform> globals: Globals;
 
 struct VertexInput {
-    @location(0) position: vec2<f32>,
+    @location(0) position: vec3<f32>,
     @location(1) local: vec2<f32>,
     @location(2) color: vec4<f32>,
     @location(3) shape: vec4<f32>,
@@ -25,15 +25,15 @@ struct VertexOutput {
 @vertex
 fn vs_main(v: VertexInput) -> VertexOutput {
     var out: VertexOutput;
-    out.position = vec4<f32>(v.position * globals.clip.xy + globals.clip.zw, 0.0, 1.0);
+    out.position = vec4<f32>(v.position.xy * globals.clip.xy + globals.clip.zw, 0.0, 1.0);
     out.local = v.local;
     out.color = v.color;
     out.shape = v.shape;
     return out;
 }
 
-fn sd_box(p: vec2<f32>, half: f32) -> f32 {
-    let q = abs(p) - vec2<f32>(half);
+fn sd_box(p: vec2<f32>, half: vec2<f32>) -> f32 {
+    let q = abs(p) - half;
     return length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0);
 }
 
@@ -54,6 +54,7 @@ fn sd_triangle(p_in: vec2<f32>, radius: f32) -> f32 {
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let kind = u32(in.shape.x + 0.5);
     var d = 1.0;
+    var glow = -1.0;
     switch kind {
         case 0u: {
             d = abs(in.local.y) - in.shape.y;
@@ -65,19 +66,28 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             d = abs(length(in.local) - in.shape.y) - 0.5 * in.shape.z;
         }
         case 3u: {
-            d = sd_box(in.local, in.shape.y);
+            d = sd_box(in.local, vec2<f32>(in.shape.y));
         }
         case 4u: {
             d = sd_triangle(in.local, in.shape.y);
         }
         case 5u: {
             let t = length(in.local) / in.shape.y;
-            let falloff = exp(-4.0 * t * t) * (1.0 - smoothstep(0.75, 1.0, t));
-            return in.color * falloff;
+            glow = exp(-4.0 * t * t) * (1.0 - smoothstep(0.75, 1.0, t));
+        }
+        case 6u: {
+            d = -1.0;
+        }
+        case 7u: {
+            d = sd_box(in.local, in.shape.yz);
         }
         default: {
         }
     }
-    let coverage = clamp(0.5 - d / max(globals.pixel, in.shape.w), 0.0, 1.0);
+    let width = max(max(fwidth(d), in.shape.w), 1e-6);
+    let coverage = clamp(0.5 - d / width, 0.0, 1.0);
+    if (glow >= 0.0) {
+        return in.color * glow;
+    }
     return in.color * coverage;
 }

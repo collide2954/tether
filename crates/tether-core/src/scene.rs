@@ -200,7 +200,7 @@ mod tests {
             .vertices
             .iter()
             .filter(|v| v.shape[0] == kind as u32 as f32 && v.color == want)
-            .map(|v| Vec2::from(v.pos))
+            .map(|v| Vec2::new(v.pos[0], v.pos[1]))
             .collect();
         hits.chunks(4)
             .map(|c| c.iter().sum::<Vec2>() / 4.0)

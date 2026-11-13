@@ -45,6 +45,12 @@ The game has no text and no tutorial. Shape, color, motion, and sound show each 
   cargo test --workspace
   ```
 
+- To make Git check the format and the lints before each commit, use this command one time:
+
+  ```bash
+  git config core.hooksPath .githooks
+  ```
+
 - Write all documentation, code comments, and commit messages in ASD-STE100 Simplified Technical English.
 - Refer to [docs/design.md](docs/design.md) for the game design.
 - Refer to [docs/model.md](docs/model.md) for the mathematical model.

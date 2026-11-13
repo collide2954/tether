@@ -68,6 +68,8 @@ impl Svf {
     }
 }
 
+const SIXTY_DECIBELS: f32 = 6.907_755;
+
 #[derive(Clone, Copy, Debug)]
 pub struct Env {
     level: f32,
@@ -81,7 +83,7 @@ impl Env {
         Self {
             level: 0.0,
             rise: 1.0 / (attack * rate).max(1.0),
-            fall: (-1.0 / (decay * rate).max(1.0)).exp(),
+            fall: (-SIXTY_DECIBELS / (decay * rate).max(1.0)).exp(),
             rising: true,
         }
     }
@@ -128,7 +130,7 @@ impl Smooth {
 
 pub fn soft_clip(x: f32) -> f32 {
     let x = x.clamp(-3.0, 3.0);
-    x * (27.0 + x * x) / (27.0 + 9.0 * x * x)
+    (x * (27.0 + x * x) / (27.0 + 9.0 * x * x)).clamp(-1.0, 1.0)
 }
 
 pub fn pan(position: f32) -> (f32, f32) {
@@ -246,6 +248,16 @@ mod tests {
     }
 
     #[test]
+    fn envelope_decay_is_a_sixty_decibel_time() {
+        let mut env = Env::new(0.01, 0.5, RATE);
+        for _ in 0..((0.01 + 0.5) * RATE) as usize {
+            env.tick();
+        }
+        let level = env.tick();
+        assert!((level - 1e-3).abs() < 2e-4, "{level}");
+    }
+
+    #[test]
     fn smooth_moves_toward_its_target() {
         let mut s = Smooth::new(0.0, 0.05, RATE);
         s.target = 1.0;
@@ -266,6 +278,14 @@ mod tests {
             assert!((soft_clip(-x) + soft_clip(x)).abs() < 1e-6);
         }
         assert!((soft_clip(0.05) - 0.05).abs() < 1e-3);
+    }
+
+    #[test]
+    fn soft_clip_never_passes_one_on_a_fine_sweep() {
+        for i in -60_000..=60_000 {
+            let x = i as f32 * 1e-4;
+            assert!(soft_clip(x).abs() <= 1.0, "{x} -> {}", soft_clip(x));
+        }
     }
 
     #[test]

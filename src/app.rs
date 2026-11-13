@@ -1,9 +1,11 @@
 use crate::gpu::Gpu;
 use crate::render::Globals;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 use tether_core::camera::{Camera, FRAME};
 use tether_core::color::Palette;
+use tether_core::math::Vec2;
 use tether_core::mesh::Mesh;
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
@@ -12,21 +14,58 @@ use winit::event_loop::{ActiveEventLoop, EventLoop, OwnedDisplayHandle};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Fullscreen, Window, WindowId};
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Options {
     pub windowed: bool,
+    pub capture: Option<Capture>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Capture {
+    pub path: PathBuf,
+    pub at: f32,
+    pub width: u32,
+    pub height: u32,
 }
 
 impl Options {
     pub fn parse(args: impl IntoIterator<Item = String>) -> Self {
-        let mut options = Self::default();
-        for arg in args {
-            if arg == "--windowed" {
-                options.windowed = true;
+        let mut windowed = false;
+        let mut path = None;
+        let mut at = 0.0;
+        let mut size = (1920, 1080);
+        let mut args = args.into_iter();
+        while let Some(arg) = args.next() {
+            match arg.as_str() {
+                "--windowed" => windowed = true,
+                "--capture" => path = args.next().map(PathBuf::from),
+                "--at" => {
+                    if let Some(value) = args.next().and_then(|s| s.parse().ok()) {
+                        at = value;
+                    }
+                }
+                "--size" => {
+                    if let Some(value) = args.next().and_then(|s| parse_size(&s)) {
+                        size = value;
+                    }
+                }
+                _ => {}
             }
         }
-        options
+        let capture = path.map(|path| Capture {
+            path,
+            at,
+            width: size.0,
+            height: size.1,
+        });
+        Self { windowed, capture }
     }
+}
+
+fn parse_size(text: &str) -> Option<(u32, u32)> {
+    let (w, h) = text.split_once('x')?;
+    let (w, h): (u32, u32) = (w.parse().ok()?, h.parse().ok()?);
+    (w > 0 && h > 0).then_some((w, h))
 }
 
 pub fn is_fullscreen_toggle(key: &Key, mods: ModifiersState) -> bool {
@@ -36,6 +75,22 @@ pub fn is_fullscreen_toggle(key: &Key, mods: ModifiersState) -> bool {
         Key::Character(c) => c.eq_ignore_ascii_case("f") && mods.control_key() && mods.super_key(),
         _ => false,
     }
+}
+
+pub fn capture(capture: &Capture) -> Result<(), String> {
+    let size = Vec2::new(capture.width as f32, capture.height as f32);
+    let camera = Camera::fit(FRAME, size);
+    let palette = Palette::paper();
+    let mesh = Mesh::new(camera.pixel_size());
+    let globals = Globals::new(&camera, palette.ground, capture.at);
+    let rgba = pollster::block_on(crate::gpu::capture(
+        capture.width,
+        capture.height,
+        &globals,
+        &mesh,
+    ));
+    let png = tether_core::png::encode_rgba(capture.width, capture.height, &rgba);
+    std::fs::write(&capture.path, png).map_err(|e| e.to_string())
 }
 
 pub fn run(options: Options) -> Result<(), winit::error::EventLoopError> {
@@ -142,14 +197,58 @@ mod tests {
 
     #[test]
     fn options_default_to_fullscreen() {
-        assert_eq!(Options::parse(args(&[])), Options { windowed: false });
+        assert_eq!(Options::parse(args(&[])), Options::default());
+        assert!(!Options::default().windowed);
     }
 
     #[test]
     fn options_read_windowed_flag() {
+        assert!(Options::parse(args(&["--windowed"])).windowed);
+    }
+
+    #[test]
+    fn options_read_capture_with_defaults() {
+        let capture = Options::parse(args(&["--capture", "out.png"])).capture;
         assert_eq!(
-            Options::parse(args(&["--windowed"])),
-            Options { windowed: true }
+            capture,
+            Some(Capture {
+                path: PathBuf::from("out.png"),
+                at: 0.0,
+                width: 1920,
+                height: 1080,
+            })
+        );
+    }
+
+    #[test]
+    fn options_read_capture_time_and_size() {
+        let options = Options::parse(args(&[
+            "--size",
+            "800x600",
+            "--capture",
+            "a.png",
+            "--at",
+            "2.5",
+        ]));
+        let capture = options.capture.expect("capture");
+        assert_eq!((capture.at, capture.width, capture.height), (2.5, 800, 600));
+    }
+
+    #[test]
+    fn options_ignore_capture_settings_without_a_path() {
+        assert_eq!(
+            Options::parse(args(&["--at", "3", "--size", "10x10"])).capture,
+            None
+        );
+    }
+
+    #[test]
+    fn options_keep_defaults_for_bad_values() {
+        let options = Options::parse(args(&["--capture", "a.png", "--at", "x", "--size", "9"]));
+        let capture = options.capture.expect("capture");
+        assert_eq!(
+            (capture.at, capture.width, capture.height),
+            (0.0, 1920, 1080)
         );
     }
 

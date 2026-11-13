@@ -21,6 +21,94 @@ impl HasDisplayHandle for Display {
     }
 }
 
+pub fn backends() -> wgpu::Backends {
+    if cfg!(target_os = "windows") {
+        wgpu::Backends::DX12 | wgpu::Backends::GL
+    } else if cfg!(target_os = "macos") {
+        wgpu::Backends::METAL
+    } else {
+        wgpu::Backends::VULKAN | wgpu::Backends::GL
+    }
+}
+
+pub async fn capture(width: u32, height: u32, globals: &Globals, mesh: &Mesh) -> Vec<u8> {
+    let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+    descriptor.backends = backends();
+    let instance = wgpu::Instance::new(descriptor.with_env());
+    let adapter = instance
+        .request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            ..Default::default()
+        })
+        .await
+        .expect("find a GPU adapter");
+    let (device, queue) = adapter
+        .request_device(&Default::default())
+        .await
+        .expect("open the GPU device");
+    let format = wgpu::TextureFormat::Rgba8UnormSrgb;
+    let mut renderer = Renderer::new(&device, format);
+    let extent = wgpu::Extent3d {
+        width,
+        height,
+        depth_or_array_layers: 1,
+    };
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("capture"),
+        size: extent,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let row = width * 4;
+    let padded =
+        row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+    let readback = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("readback"),
+        size: u64::from(padded) * u64::from(height),
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let view = texture.create_view(&Default::default());
+    let mut encoder = device.create_command_encoder(&Default::default());
+    renderer.render(&device, &queue, &mut encoder, &view, globals, mesh);
+    encoder.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &readback,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(padded),
+                rows_per_image: Some(height),
+            },
+        },
+        extent,
+    );
+    queue.submit([encoder.finish()]);
+    readback.map_async(wgpu::MapMode::Read, .., |result| {
+        result.expect("map the readback buffer");
+    });
+    device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .expect("wait for the GPU");
+    let data = readback
+        .slice(..)
+        .get_mapped_range()
+        .expect("read the readback buffer");
+    data.chunks(padded as usize)
+        .flat_map(|line| &line[..row as usize])
+        .copied()
+        .collect()
+}
+
 pub struct Gpu {
     instance: wgpu::Instance,
     window: Arc<Window>,
@@ -33,10 +121,10 @@ pub struct Gpu {
 
 impl Gpu {
     pub async fn new(window: Arc<Window>, display: OwnedDisplayHandle) -> Self {
-        let descriptor =
-            wgpu::InstanceDescriptor::new_with_display_handle(Box::new(Display(display)))
-                .with_env();
-        let instance = wgpu::Instance::new(descriptor);
+        let mut descriptor =
+            wgpu::InstanceDescriptor::new_with_display_handle(Box::new(Display(display)));
+        descriptor.backends = backends();
+        let instance = wgpu::Instance::new(descriptor.with_env());
         let surface = instance
             .create_surface(window.clone())
             .expect("create surface");
@@ -138,5 +226,28 @@ impl Gpu {
         if suboptimal && (size.width, size.height) != (self.config.width, self.config.height) {
             self.resize(size.width, size.height);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn windows_uses_direct3d_12_with_gl_fallback() {
+        assert_eq!(backends(), wgpu::Backends::DX12 | wgpu::Backends::GL);
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn macos_uses_metal() {
+        assert_eq!(backends(), wgpu::Backends::METAL);
+    }
+
+    #[test]
+    #[cfg(all(unix, not(target_os = "macos")))]
+    fn linux_uses_vulkan_with_gl_fallback() {
+        assert_eq!(backends(), wgpu::Backends::VULKAN | wgpu::Backends::GL);
     }
 }

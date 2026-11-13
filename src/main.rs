@@ -6,7 +6,11 @@ mod render;
 
 fn main() {
     let options = app::Options::parse(std::env::args().skip(1));
-    if let Err(error) = app::run(options) {
+    let result = match &options.capture {
+        Some(capture) => app::capture(capture),
+        None => app::run(options).map_err(|e| e.to_string()),
+    };
+    if let Err(error) = result {
         eprintln!("tether: {error}");
         std::process::exit(1);
     }

@@ -15,8 +15,8 @@ pub struct Grip {
 
 pub const MAGNET_RADIUS: f32 = 0.7;
 pub const WELD_RADIUS: f32 = 0.08;
-pub const GRIP_STRAIN: f32 = 3.0;
-pub const TEAR_STRAIN: f32 = 3.0;
+pub const GRIP_STRAIN: f32 = 2.2;
+pub const TEAR_STRAIN: f32 = 2.2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Weld {

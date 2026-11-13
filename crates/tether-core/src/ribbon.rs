@@ -192,6 +192,17 @@ impl Ribbon {
         }
     }
 
+    pub fn free_strain(&self) -> f32 {
+        let (mut now, mut rest) = (0.0, 0.0);
+        for i in 0..self.rest_len.len() {
+            if self.stiffness[i].min(self.stiffness[i + 1]) < 1.0 {
+                now += self.pos[i].distance(self.pos[i + 1]);
+                rest += self.rest_len[i];
+            }
+        }
+        if rest > 0.0 { now / rest } else { 1.0 }
+    }
+
     pub fn strain(&self) -> f32 {
         (0..self.rest_len.len())
             .map(|i| self.segment_strain(i))
@@ -309,6 +320,20 @@ mod tests {
         assert!(near_v(r.end_pos(Side::Tail), Vec2::new(4.0, 0.0)));
         assert!(near_v(r.outward(Side::Head), Vec2::new(-1.0, 0.0)));
         assert!(near_v(r.outward(Side::Tail), Vec2::new(1.0, 0.0)));
+    }
+
+    #[test]
+    fn free_strain_measures_the_stretch_of_the_soft_part() {
+        let mut r = line(End::Source, End::Open(Class::Ink), 1.0);
+        assert!(near(r.free_strain(), 1.0));
+        let soft_rest: f32 = (0..40)
+            .filter(|&i| r.stiffness[i].min(r.stiffness[i + 1]) < 1.0)
+            .map(|i| r.rest_len[i])
+            .sum();
+        r.pos[40].x += 0.5;
+        assert!(near(r.free_strain(), (soft_rest + 0.5) / soft_rest));
+        let fixed = line(End::Source, End::Goal, 1.0);
+        assert!(near(fixed.free_strain(), 1.0));
     }
 
     #[test]

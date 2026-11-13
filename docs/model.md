@@ -82,17 +82,21 @@ $$\Delta\lambda = \frac{-C}{\sum_j w_j \lvert \nabla_j C \rvert^2 + \tilde\alpha
 - The strain of a segment is its length divided by h.
 - The strain of a ribbon is the maximum segment strain.
 - The drawn width of a segment is $w_0 / \sqrt{\text{strain}}$. As a result, a stretched ribbon becomes thin.
+- The free strain of a ribbon is the current length of its soft segments divided by their rest length. A soft segment has a particle with $s < 1$.
+- The free strain changes smoothly. A fast pull of the cursor does not cause a large change.
 - Above the strain $s_{hum}$, the ribbon vibrates and hums.
-- Above the strain $s_{grip}$, the held edge comes out of the grip.
-- Above the strain $s_{tear}$, a weld tears.
+- Above the free strain $s_{grip}$, the held edge comes out of the grip.
+- Above the free strain $s_{tear}$, a weld tears. If the player holds that seam, the grip releases.
 
 ## Weld
 
 - A weld connects two open ends: (ribbon a, end $e_a$) and (ribbon b, end $e_b$).
-- Two open ends are compatible when they have the same class and they are different ends.
+- Two open ends are compatible when they have the same class, they are different ends, and they have no weld.
 - One ribbon can weld its two ends together to make a loop.
-- In each substep, a magnet pulls the held end to the nearest compatible free end in the radius $R_{mag}$.
-- When the distance between the two ends is less than $R_{weld}$, the weld forms.
+- The magnet finds the nearest compatible end in the radius $R_{mag}$. Let $p = \mathrm{smoothstep}(R_{mag}, R_{weld}, d)$, where d is the distance between the ends.
+- In each substep, the grip target moves to the compatible end by the fraction p. The compatible end also moves a small distance to the held end.
+- The pull becomes stronger when the ends come nearer. As a result, the held end snaps in.
+- When the distance is less than $R_{weld}$, the weld forms at the midpoint and the grip releases.
 
 ## Traveler
 

@@ -1,5 +1,5 @@
 use crate::audio::synth::{Command, Note, Sound, Timbre};
-use crate::game::Game;
+use crate::game::{Cues, Game};
 use crate::math::smoothstep;
 use crate::ribbon::{Class, Side};
 use crate::traveler::{Moment, Phase};
@@ -75,9 +75,7 @@ impl Score {
         }
     }
 
-    pub fn listen(&mut self, game: &mut Game) -> Vec<Command> {
-        let events = std::mem::take(&mut game.world.events);
-        let moments = std::mem::take(&mut game.moments);
+    pub fn listen(&mut self, game: &Game, cues: &Cues) -> Vec<Command> {
         let mut out = Vec::new();
         let key = root(game.level);
         if self.level.is_some_and(|level| level != game.level) {
@@ -148,7 +146,7 @@ impl Score {
                 self.rub_armed = true;
             }
         }
-        for event in events {
+        for &event in &cues.events {
             match event {
                 Event::Welded(weld) => {
                     let pan = pan_of(world.end_pos(weld.a).x);
@@ -174,7 +172,7 @@ impl Score {
         }
         let traveler = game.traveler.as_ref();
         let pan = traveler.map_or(0.0, |t| pan_of(t.position(world).x));
-        for moment in moments {
+        for &moment in &cues.moments {
             match moment {
                 Moment::Departed => {
                     let note = Note::new(Sound::Tone(Timbre::Wood), key * 4.0);
@@ -259,6 +257,11 @@ mod tests {
         ribbon: 1,
         side: Side::Head,
     };
+
+    fn listen_to(score: &mut Score, g: &mut Game) -> Vec<Command> {
+        let cues = g.take_cues();
+        score.listen(g, &cues)
+    }
 
     fn game(text: &str) -> Game {
         Game::with_world(Level::parse(text).unwrap().build(), 0)
@@ -358,7 +361,7 @@ mod tests {
     #[test]
     fn first_listen_starts_the_drone_without_a_whoosh() {
         let mut g = game(PAIR);
-        let commands = Score::new().listen(&mut g);
+        let commands = listen_to(&mut Score::new(), &mut g);
         assert_eq!(drone(&commands), (root(0), 0.0));
         assert!(!sounds(&commands).contains(&Sound::Whoosh));
     }
@@ -367,9 +370,9 @@ mod tests {
     fn a_new_level_whooshes_and_moves_the_drone() {
         let mut g = game(PAIR);
         let mut score = Score::new();
-        score.listen(&mut g);
+        listen_to(&mut score, &mut g);
         g.level = 1;
-        let commands = score.listen(&mut g);
+        let commands = listen_to(&mut score, &mut g);
         assert!(sounds(&commands).contains(&Sound::Whoosh));
         assert_eq!(drone(&commands).0, root(1));
     }
@@ -379,9 +382,9 @@ mod tests {
         let mut g = game(PAIR);
         let mut score = Score::new();
         hold_at(&mut g, Vec2::new(-1.0, 0.0));
-        let first = notes(&score.listen(&mut g));
+        let first = notes(&listen_to(&mut score, &mut g));
         assert!(first.iter().any(|n| n.sound == Sound::Tone(Timbre::Wood)));
-        let second = notes(&score.listen(&mut g));
+        let second = notes(&listen_to(&mut score, &mut g));
         assert!(!second.iter().any(|n| n.sound == Sound::Tone(Timbre::Wood)));
     }
 
@@ -390,14 +393,14 @@ mod tests {
         let mut g = game(PAIR);
         let mut score = Score::new();
         hold_at(&mut g, Vec2::new(-0.5, 0.0));
-        let (far_detune, far_level) = pair(&score.listen(&mut g));
+        let (far_detune, far_level) = pair(&listen_to(&mut score, &mut g));
         hold_at(&mut g, Vec2::new(0.7, 0.0));
-        let (near_detune, near_level) = pair(&score.listen(&mut g));
+        let (near_detune, near_level) = pair(&listen_to(&mut score, &mut g));
         assert!(far_level > 0.0 && near_level > far_level);
         assert!(near_detune < far_detune);
         assert!((far_detune - DETUNE_PER_UNIT * 1.5).abs() < 1e-4);
         g.world.grip = None;
-        assert_eq!(pair(&score.listen(&mut g)).1, 0.0);
+        assert_eq!(pair(&listen_to(&mut score, &mut g)).1, 0.0);
     }
 
     #[test]
@@ -405,21 +408,21 @@ mod tests {
         let mut g = game(CLASH);
         let mut score = Score::new();
         hold_at(&mut g, Vec2::new(0.5, 0.0));
-        assert_eq!(rubs(&score.listen(&mut g)), 1);
-        assert_eq!(rubs(&score.listen(&mut g)), 0);
+        assert_eq!(rubs(&listen_to(&mut score, &mut g)), 1);
+        assert_eq!(rubs(&listen_to(&mut score, &mut g)), 0);
         hold_at(&mut g, Vec2::new(-1.0, 0.0));
-        assert_eq!(rubs(&score.listen(&mut g)), 0);
+        assert_eq!(rubs(&listen_to(&mut score, &mut g)), 0);
         hold_at(&mut g, Vec2::new(0.5, 0.0));
-        assert_eq!(rubs(&score.listen(&mut g)), 1);
+        assert_eq!(rubs(&listen_to(&mut score, &mut g)), 1);
     }
 
     #[test]
     fn strain_crackle_follows_the_free_strain() {
         let mut g = game(PAIR);
         let mut score = Score::new();
-        assert_eq!(strain(&score.listen(&mut g)), 0.0);
+        assert_eq!(strain(&listen_to(&mut score, &mut g)), 0.0);
         hold_at(&mut g, Vec2::new(-1.0, 3.0));
-        assert!(strain(&score.listen(&mut g)) > 0.3);
+        assert!(strain(&listen_to(&mut score, &mut g)) > 0.3);
     }
 
     #[test]
@@ -427,9 +430,9 @@ mod tests {
         let mut g = game(PAIR);
         let mut score = Score::new();
         hold_at(&mut g, Vec2::new(-1.0, 3.0));
-        assert!(drone(&score.listen(&mut g)).1 > 0.3);
+        assert!(drone(&listen_to(&mut score, &mut g)).1 > 0.3);
         g.complete = Some(0.0);
-        assert_eq!(drone(&score.listen(&mut g)).1, 0.0);
+        assert_eq!(drone(&listen_to(&mut score, &mut g)).1, 0.0);
     }
 
     #[test]
@@ -441,25 +444,25 @@ mod tests {
             b: B_HEAD,
         };
         g.world.events.push(Event::Welded(weld));
-        let welded = sounds(&score.listen(&mut g));
+        let welded = sounds(&listen_to(&mut score, &mut g));
         assert!(welded.contains(&Sound::Boom));
         assert!(welded.contains(&Sound::Shimmer));
         assert!(welded.contains(&Sound::Tone(Timbre::Wood)));
         assert!(g.world.events.is_empty());
         g.world.events.push(Event::Tore(weld));
-        assert!(sounds(&score.listen(&mut g)).contains(&Sound::Rip));
+        assert!(sounds(&listen_to(&mut score, &mut g)).contains(&Sound::Rip));
         g.world.events.push(Event::Slipped(A_TAIL));
-        assert!(sounds(&score.listen(&mut g)).contains(&Sound::Pluck));
+        assert!(sounds(&listen_to(&mut score, &mut g)).contains(&Sound::Pluck));
     }
 
     #[test]
     fn traveler_moments_map_to_sounds_and_drain() {
         let mut g = game(PAIR);
         let mut score = Score::new();
-        score.listen(&mut g);
+        listen_to(&mut score, &mut g);
         let mut hear = |m: Moment| {
             g.moments.push(m);
-            let commands = score.listen(&mut g);
+            let commands = listen_to(&mut score, &mut g);
             assert!(g.moments.is_empty());
             notes(&commands)
         };
@@ -494,7 +497,7 @@ mod tests {
     fn reeling_plays_one_rising_glide() {
         let mut g = game(PAIR);
         let mut score = Score::new();
-        score.listen(&mut g);
+        listen_to(&mut score, &mut g);
         g.traveler.as_mut().unwrap().phase = Phase::Reeling;
         let rising = |c: &[Command]| {
             notes(c)
@@ -502,7 +505,7 @@ mod tests {
                 .filter(|n| matches!(n.sound, Sound::Glide { ratio, .. } if ratio > 1.0))
                 .count()
         };
-        assert_eq!(rising(&score.listen(&mut g)), 1);
-        assert_eq!(rising(&score.listen(&mut g)), 0);
+        assert_eq!(rising(&listen_to(&mut score, &mut g)), 1);
+        assert_eq!(rising(&listen_to(&mut score, &mut g)), 0);
     }
 }

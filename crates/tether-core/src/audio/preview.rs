@@ -147,7 +147,8 @@ pub fn listen(level: usize, drag: Option<(Vec2, Vec2)>, seconds: f32, rate: f32)
             }
         }
         game.advance(FRAME);
-        for command in score.listen(&mut game) {
+        let cues = game.take_cues();
+        for command in score.listen(&game, &cues) {
             synth.apply(command);
         }
         let end = (frame + per_frame).min(total);

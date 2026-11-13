@@ -5,13 +5,19 @@ use crate::mesh::Mesh;
 use crate::ribbon::Side;
 use crate::scene::{draw_halo, draw_ribbons, draw_shadows, draw_traveler};
 use crate::traveler::{Moment, Traveler};
-use crate::world::{EndRef, Grip, World};
+use crate::world::{EndRef, Event, Grip, World};
 
 pub const STEP: f32 = 1.0 / 120.0;
 pub const MAX_FRAME: f32 = 0.25;
 pub const GRAB_RADIUS: f32 = 0.45;
 pub const HOLD: f32 = 1.8;
 pub const FADE: f32 = 0.6;
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Cues {
+    pub events: Vec<Event>,
+    pub moments: Vec<Moment>,
+}
 
 #[derive(Clone, Debug)]
 pub struct Game {
@@ -101,6 +107,13 @@ impl Game {
             }
         }
         self.world.grip = best.map(|(_, end)| Grip { end, target: at });
+    }
+
+    pub fn take_cues(&mut self) -> Cues {
+        Cues {
+            events: std::mem::take(&mut self.world.events),
+            moments: std::mem::take(&mut self.moments),
+        }
     }
 
     pub fn veil(&self) -> f32 {
@@ -223,6 +236,23 @@ mod tests {
         let core =
             first(&|v| v.shape[0] == kind(Kind::Disc) && v.color == palette.pulse.premultiplied());
         assert!(glow < ink && ink < core);
+    }
+
+    #[test]
+    fn take_cues_drains_events_and_moments() {
+        use crate::world::Event;
+        let mut game = Game::new(0);
+        let end = EndRef {
+            ribbon: 0,
+            side: Side::Tail,
+        };
+        game.world.events.push(Event::Slipped(end));
+        game.moments.push(Moment::Departed);
+        let cues = game.take_cues();
+        assert_eq!(cues.events, vec![Event::Slipped(end)]);
+        assert_eq!(cues.moments, vec![Moment::Departed]);
+        assert!(game.world.events.is_empty() && game.moments.is_empty());
+        assert_eq!(game.take_cues(), Cues::default());
     }
 
     #[test]

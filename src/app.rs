@@ -321,7 +321,8 @@ impl Running {
         let now = Instant::now();
         self.game.advance((now - self.last).as_secs_f32());
         self.last = now;
-        let commands = self.score.listen(&mut self.game);
+        let cues = self.game.take_cues();
+        let commands = self.score.listen(&self.game, &cues);
         if let Some(sound) = &self.sound {
             sound.send(commands);
         }

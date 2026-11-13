@@ -5,7 +5,13 @@ use serde::Deserialize;
 
 pub const SPACING: f32 = 0.1;
 
-pub const LEVELS: &[&str] = &[include_str!("../levels/01.ron")];
+pub const LEVELS: &[&str] = &[
+    include_str!("../levels/01.ron"),
+    include_str!("../levels/02.ron"),
+    include_str!("../levels/03.ron"),
+    include_str!("../levels/04.ron"),
+    include_str!("../levels/05.ron"),
+];
 
 fn default_free() -> f32 {
     2.0

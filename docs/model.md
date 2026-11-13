@@ -34,19 +34,23 @@ This document gives the mathematical model of the game world.
 - Near an open end, the ribbon is free. Away from open ends, the ribbon stays on its rest shape.
 - Each open end has a free length L.
 - Let d be the rest arc length from a particle to the nearest open end.
-- The shape stiffness of the particle is $k(d) = k_{max} \cdot \mathrm{smoothstep}(L, L + h_{ramp}, d)$.
-- As a result, the free part is an elastic rod with a clamp at one side. A pull on the open end gives almost equal strain along the free part.
-- The stretch and bend constraints keep the rest lengths and the rest angles. As a result, a released free part returns to its rest shape.
+- The stiffness of the particle is $s(d) = \mathrm{smoothstep}(L, L + h_{ramp}, d)$, with $h_{ramp} = 1.5$ wu.
+- The shape compliance of the particle is $\alpha_{shape} \cdot 10^{6 (1 - s)}$. A particle with $s = 0$ has no shape constraint.
+- The compliance changes through six decades. As a result, the clamp becomes weaker gradually, and the ribbon curves smoothly at the clamp.
+- The free part is an elastic rod with a clamp at one side. A pull on the open end gives almost equal strain along the free part.
+- The stretch and bend constraints keep the rest lengths and the rest curvature. As a result, a released free part returns to its rest shape.
 
 ## Solver
 
 - The solver uses XPBD (extended position-based dynamics).
 - The solver uses a fixed step $\Delta t$ and $s$ substeps for each step. Each substep has the length $\Delta t_s = \Delta t / s$.
 - Each substep does these operations in this sequence:
-  1. Calculate the velocity of each free particle: $v_i = (x_i - p_i) \cdot e^{-c \Delta t_s}$.
-  2. Set $p_i = x_i$. Then set $x_i = x_i + v_i$.
-  3. Move each fixed particle to its target.
-  4. Apply each constraint one time.
+  1. Calculate the velocity of each free particle: $v_i = x_i - p_i$.
+  2. Apply internal damping: $v_i \leftarrow v_i + 0.3 \left( \tfrac{1}{2}(v_{i-1} + v_{i+1}) - v_i \right)$. This removes zig-zag oscillation and keeps smooth motion.
+  3. Apply global damping: $v_i \leftarrow v_i \cdot e^{-c \Delta t_s}$.
+  4. Set $p_i = x_i$. Then set $x_i = x_i + v_i$.
+  5. Move each fixed particle to its target.
+  6. Apply each constraint one time.
 
 ### Constraints
 
@@ -54,21 +58,24 @@ A constraint has a function C and a compliance α. A low α gives a stiff constr
 
 | Constraint | C | Effect |
 | --- | --- | --- |
-| Stretch | $\lvert x_{i+1} - x_i \rvert - h$ | Keeps adjacent particles near the rest distance. |
-| Bend | $\theta_i - \theta^0_i$ | Keeps the turn angle at each particle near its rest angle. |
-| Shape | $\lvert x_i - r_i \rvert$ | Pulls each particle to its rest position, with the stiffness k(d). |
+| Stretch | $\lvert x_{i+1} - x_i \rvert - \ell_i$ | Keeps adjacent particles near the rest distance $\ell_i$. |
+| Bend | $x_i - \tfrac{1}{2}(x_{i-k} + x_{i+k}) - R\,o_i^k$ | Keeps each particle at its rest offset from the midpoint of its neighbors. |
+| Shape | $\lvert x_i - r_i \rvert$ | Pulls each particle to its rest position. The clamp profile sets the compliance. |
 | Pin | $\lvert x_i - t \rvert$ | Holds a particle at a target t, for example the cursor. |
 | Seam | $\lvert x_a - x_b \rvert$ | Holds two welded ends at the same point. |
-| Seam bend | $\theta_{seam}$ | Keeps the path straight through the seam. |
+| Seam bend | $x_s - \tfrac{1}{2}(x_{a'} + x_{b'})$ | Keeps the path straight through the seam. |
 
-- $\theta_i$ is the signed angle from segment (i − 1, i) to segment (i, i + 1).
 - Each substep applies each constraint one time. Thus λ starts at zero, and the update is:
 
 $$\Delta\lambda = \frac{-C}{\sum_j w_j \lvert \nabla_j C \rvert^2 + \tilde\alpha}, \qquad \tilde\alpha = \frac{\alpha}{\Delta t_s^2}, \qquad x_j \leftarrow x_j + w_j \nabla_j C \, \Delta\lambda$$
 
-- For the bend constraint, with $a = x_i - x_{i-1}$, $b = x_{i+1} - x_i$, and $\perp(v) = (-v_y, v_x)$:
+### Bend at many scales
 
-$$\nabla_{i-1}\theta = \frac{\perp(a)}{\lvert a \rvert^2}, \qquad \nabla_{i+1}\theta = \frac{\perp(b)}{\lvert b \rvert^2}, \qquad \nabla_i\theta = -\nabla_{i-1}\theta - \nabla_{i+1}\theta$$
+- The bend constraint is a vector constraint. Its gradient is $I$ for particle i and $-\tfrac{1}{2} I$ for each neighbor.
+- $o_i^k = r_i - \tfrac{1}{2}(r_{i-k} + r_{i+k})$ is the rest offset at the stride k.
+- R is the rotation from the rest chord $r_{i+k} - r_{i-k}$ to the current chord $x_{i+k} - x_{i-k}$. R does not scale the offset. A scaled offset can grow without limit at a corner.
+- The solver applies the strides k = 12, 4, and 1, in this sequence. The compliance at the stride k is $\alpha_{bend} \cdot k^4$.
+- The long strides move smooth shapes quickly. The short stride keeps the curve smooth between particles.
 
 ## Strain
 

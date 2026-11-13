@@ -1,7 +1,7 @@
-use crate::math::{Vec2, signed_angle, smoothstep};
+use crate::math::{Vec2, smoothstep};
 use serde::Deserialize;
 
-pub const RAMP: f32 = 0.6;
+pub const RAMP: f32 = 1.5;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Deserialize)]
 pub enum Class {
@@ -90,7 +90,6 @@ pub struct Ribbon {
     pub rest: Vec<Vec2>,
     pub inv_mass: Vec<f32>,
     pub stiffness: Vec<f32>,
-    pub rest_angle: Vec<f32>,
     pub rest_len: Vec<f32>,
     pub spacing: f32,
     pub half_width: f32,
@@ -135,15 +134,6 @@ impl Ribbon {
                 smoothstep(free_length, free_length + RAMP, d)
             })
             .collect();
-        let rest_angle = (0..n)
-            .map(|i| {
-                if i == 0 || i + 1 >= n {
-                    0.0
-                } else {
-                    signed_angle(rest[i] - rest[i - 1], rest[i + 1] - rest[i])
-                }
-            })
-            .collect();
         let rest_len = rest.windows(2).map(|w| w[0].distance(w[1])).collect();
         Self {
             pos: rest.clone(),
@@ -151,7 +141,6 @@ impl Ribbon {
             rest,
             inv_mass,
             stiffness,
-            rest_angle,
             rest_len,
             spacing,
             half_width,
@@ -213,7 +202,6 @@ impl Ribbon {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::f32::consts::FRAC_PI_2;
 
     fn near(a: f32, b: f32) -> bool {
         (a - b).abs() < 1e-4
@@ -305,25 +293,11 @@ mod tests {
         assert_eq!(r.stiffness[40], 0.0);
         assert_eq!(r.stiffness[31], 0.0);
         assert_eq!(r.stiffness[0], 1.0);
-        assert_eq!(r.stiffness[20], 1.0);
+        let firm = 40 - ((1.0 + RAMP) / 0.1).ceil() as usize - 1;
+        assert_eq!(r.stiffness[firm], 1.0);
         assert!(r.stiffness[27] > 0.0 && r.stiffness[27] < 1.0);
         let fixed = line(End::Source, End::Goal, 1.0);
         assert!(fixed.stiffness.iter().all(|&s| s == 1.0));
-    }
-
-    #[test]
-    fn rest_angles_record_turns() {
-        let straight = line(End::Source, End::Goal, 1.0);
-        assert!(straight.rest_angle.iter().all(|&a| near(a, 0.0)));
-        let corner = Ribbon::new(
-            &[Vec2::ZERO, Vec2::new(1.0, 0.0), Vec2::new(1.0, 1.0)],
-            0.25,
-            0.1,
-            (End::Source, End::Goal),
-            1.0,
-        );
-        assert!(near(corner.rest_angle[4], FRAC_PI_2));
-        assert!(near(corner.rest_angle[0], 0.0) && near(corner.rest_angle[8], 0.0));
     }
 
     #[test]

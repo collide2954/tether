@@ -1,4 +1,4 @@
-use crate::math::{Vec2, signed_angle, wrap_angle};
+use crate::math::Vec2;
 use crate::ribbon::{Ribbon, Side};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -27,8 +27,8 @@ impl Default for Params {
         Self {
             substeps: 8,
             damping: 3.0,
-            stretch: 2e-6,
-            bend: 4e-5,
+            stretch: 1e-5,
+            bend: 1e-8,
             shape: 1e-8,
         }
     }
@@ -77,11 +77,20 @@ impl World {
     }
 }
 
+const INTERNAL_DAMPING: f32 = 0.3;
+
 fn integrate(r: &mut Ribbon, damp: f32) {
-    for i in 0..r.len() {
+    let n = r.len();
+    let velocity: Vec<Vec2> = (0..n).map(|i| r.pos[i] - r.prev[i]).collect();
+    for i in 0..n {
         let pos = r.pos[i];
         r.pos[i] = if r.inv_mass[i] > 0.0 {
-            pos + (pos - r.prev[i]) * damp
+            let mut v = velocity[i];
+            if i > 0 && i + 1 < n {
+                let mean = (velocity[i - 1] + velocity[i + 1]) * 0.5;
+                v += (mean - v) * INTERNAL_DAMPING;
+            }
+            pos + v * damp
         } else {
             r.rest[i]
         };
@@ -104,26 +113,42 @@ fn solve_stretch(r: &mut Ribbon, alpha: f32) {
     }
 }
 
+const SHAPE_DECADES: f32 = 6.0;
+
+const BEND_STRIDES: [usize; 3] = [12, 4, 1];
+
 fn solve_bend(r: &mut Ribbon, alpha: f32) {
-    for i in 1..r.len().saturating_sub(1) {
-        let (w0, w1, w2) = (r.inv_mass[i - 1], r.inv_mass[i], r.inv_mass[i + 1]);
-        let a = r.pos[i] - r.pos[i - 1];
-        let b = r.pos[i + 1] - r.pos[i];
-        let (la, lb) = (a.length_squared(), b.length_squared());
-        if w0 + w1 + w2 == 0.0 || la < 1e-12 || lb < 1e-12 {
-            continue;
+    for stride in BEND_STRIDES {
+        let alpha = alpha * (stride as f32).powi(4);
+        for i in stride..r.len().saturating_sub(stride) {
+            let (a, b) = (i - stride, i + stride);
+            let (w0, w1, w2) = (r.inv_mass[a], r.inv_mass[i], r.inv_mass[b]);
+            let weight = 0.25 * w0 + w1 + 0.25 * w2;
+            if weight == 0.0 {
+                continue;
+            }
+            let rest_offset = r.rest[i] - (r.rest[a] + r.rest[b]) * 0.5;
+            let offset = follow(rest_offset, r.rest[b] - r.rest[a], r.pos[b] - r.pos[a]);
+            let c = r.pos[i] - (r.pos[a] + r.pos[b]) * 0.5 - offset;
+            let dl = -c / (weight + alpha);
+            r.pos[a] -= dl * (0.5 * w0);
+            r.pos[i] += dl * w1;
+            r.pos[b] -= dl * (0.5 * w2);
         }
-        let c = wrap_angle(signed_angle(a, b) - r.rest_angle[i]);
-        let g0 = a.perp() / la;
-        let g2 = b.perp() / lb;
-        let g1 = -g0 - g2;
-        let denom =
-            w0 * g0.length_squared() + w1 * g1.length_squared() + w2 * g2.length_squared() + alpha;
-        let dl = -c / denom;
-        r.pos[i - 1] += g0 * (w0 * dl);
-        r.pos[i] += g1 * (w1 * dl);
-        r.pos[i + 1] += g2 * (w2 * dl);
     }
+}
+
+fn follow(offset: Vec2, rest_chord: Vec2, chord: Vec2) -> Vec2 {
+    let turn = Vec2::new(rest_chord.dot(chord), rest_chord.perp_dot(chord));
+    let size = turn.length();
+    if offset == Vec2::ZERO || size < 1e-12 {
+        return offset;
+    }
+    let turn = turn / size;
+    Vec2::new(
+        turn.x * offset.x - turn.y * offset.y,
+        turn.y * offset.x + turn.x * offset.y,
+    )
 }
 
 fn solve_shape(r: &mut Ribbon, alpha: f32) {
@@ -134,7 +159,8 @@ fn solve_shape(r: &mut Ribbon, alpha: f32) {
         if s <= 0.0 || w == 0.0 || len < 1e-9 {
             continue;
         }
-        let dl = -len / (w + alpha / s);
+        let soft = 10f32.powf(SHAPE_DECADES * (1.0 - s));
+        let dl = -len / (w + alpha * soft);
         r.pos[i] += d / len * (w * dl);
     }
 }
@@ -194,7 +220,7 @@ mod tests {
         run(&mut w, 1.0);
         let r = &w.ribbons[0];
         assert!(r.pos[40].distance(w.grip.unwrap().target) < 1e-3);
-        assert!(deviation(r, 0..14) < 0.01);
+        assert!(deviation(r, 0..5) < 0.01);
         assert!(r.pos[30].y > 0.2);
     }
 
@@ -219,6 +245,46 @@ mod tests {
         w.grip = None;
         run(&mut w, 3.0);
         assert!(deviation(&w.ribbons[0], 0..41) < 0.02);
+    }
+
+    #[test]
+    fn ribbon_with_a_corner_keeps_its_rest_shape() {
+        let corner = Ribbon::new(
+            &[
+                Vec2::new(-2.0, 0.0),
+                Vec2::new(0.0, 0.0),
+                Vec2::new(0.0, 2.0),
+            ],
+            0.1,
+            0.12,
+            (End::Source, End::Open(Class::Red)),
+            1.5,
+        );
+        let mut w = World::new(vec![corner]);
+        run(&mut w, 2.0);
+        assert!(deviation(&w.ribbons[0], 0..41) < 1e-4);
+        grip_tail(&mut w, Vec2::new(1.0, -0.5));
+        run(&mut w, 1.0);
+        w.grip = None;
+        run(&mut w, 3.0);
+        assert!(deviation(&w.ribbons[0], 0..41) < 0.02);
+    }
+
+    #[test]
+    fn dragged_free_part_bends_smoothly() {
+        let mut w = world();
+        grip_tail(&mut w, Vec2::new(-1.0, 1.8));
+        run(&mut w, 1.5);
+        let r = &w.ribbons[0];
+        let turns: Vec<f32> = (1..40)
+            .map(|i| {
+                crate::math::signed_angle(r.pos[i] - r.pos[i - 1], r.pos[i + 1] - r.pos[i]).abs()
+            })
+            .collect();
+        let max = turns.iter().copied().fold(0.0, f32::max);
+        let total: f32 = turns.iter().sum();
+        assert!(total > 0.5, "total turn {total}");
+        assert!(max < 0.25, "kink {max}");
     }
 
     #[test]

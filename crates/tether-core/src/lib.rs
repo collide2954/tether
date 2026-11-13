@@ -9,4 +9,5 @@ pub mod png;
 pub mod ribbon;
 pub mod scene;
 pub mod traveler;
+pub mod view;
 pub mod world;
